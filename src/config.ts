@@ -8,8 +8,9 @@ const PoolConfigSchema = z.object({
   keys: z
     .array(z.record(z.string()))
     .min(1, "keys must have at least one entry"),
-  strategy: z.enum(["round-robin", "deplete-first"]),
-  cooldownSeconds: z.coerce.number().int().positive().default(300),
+  strategy: z.enum(["round-robin", "deplete-first"]).optional(),
+  cooldownSeconds: z.coerce.number().int().positive().optional(),
+  maxConsecutiveErrors: z.coerce.number().int().positive().optional(),
   rateLimitPatterns: z
     .array(z.string().min(1))
     .min(1, "rateLimitPatterns is required")
@@ -17,7 +18,6 @@ const PoolConfigSchema = z.object({
       (pats) => pats.every((p) => { try { new RegExp(p); return true } catch { return false } }),
       { message: "all rateLimitPatterns entries must be valid regular expressions" },
     ),
-  maxConsecutiveErrors: z.coerce.number().int().positive().default(3),
   cwd: z.string().optional(),
 });
 const ConfigFileSchema = z.object({

@@ -65,25 +65,22 @@ describe("Pool startup", () => {
     await pool.close();
   });
 
-  test("fails when all upstreams crash during startup", async () => {
+  test("fails when first upstream crashes during startup", async () => {
     const pool = new Pool(
       "test",
       poolConfig({
-        keys: [
-          { KEY: "a", TEST_CRASH_ON_START: "1" },
-          { KEY: "b", TEST_CRASH_ON_START: "1" },
-        ],
+        keys: [{ KEY: "a", TEST_CRASH_ON_START: "1" }],
       }),
     );
-    await expect(pool.start()).rejects.toThrow(/all upstreams failed/i);
+    await expect(pool.start()).rejects.toThrow(/Connection closed/i);
   });
 
-  test("fails on tool mismatch between upstreams", async () => {
+  test("detects tool mismatch on failover", async () => {
     const pool = new Pool(
       "test",
       poolConfig({
         keys: [
-          { KEY: "a" },
+          { KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" }, // first call rate-limits
           {
             KEY: "b",
             TEST_TOOLS_JSON: JSON.stringify([
@@ -93,7 +90,12 @@ describe("Pool startup", () => {
         ],
       }),
     );
-    await expect(pool.start()).rejects.toThrow(/tools mismatch/i);
+    await pool.start();
+    const result = await pool.routeCall("echo", {});
+    // Should be an error about tool mismatch during failover
+    assertCallResult(result);
+    expect(result.isError).toBe(true);
+    await pool.close();
   });
 });
 
@@ -115,8 +117,7 @@ describe("Pool routing", () => {
   });
 
   test("round-robin distributes across keys", async () => {
-    // key "a" rate-limits every 2nd call (1st, 3rd, 5th… succeed)
-    // key "b" always succeeds
+    // key "a" rate-limits every 2nd call, key "b" always succeeds
     const pool = new Pool(
       "test",
       poolConfig({
@@ -124,9 +125,7 @@ describe("Pool routing", () => {
           { KEY: "a", TEST_RATE_LIMIT_EVERY_N: "2" },
           { KEY: "b" },
         ],
-        cooldownSeconds: 60,
       }),
-      100,
     );
     await pool.start();
 
@@ -144,9 +143,7 @@ describe("Pool routing", () => {
       "test",
       poolConfig({
         keys: [{ KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" }],
-        cooldownSeconds: 999,
       }),
-      100,
     );
     await pool.start();
 
@@ -157,35 +154,20 @@ describe("Pool routing", () => {
     await pool.close();
   });
 
-  test("cooldown expiry re-activates rate-limited upstream", async () => {
-    // Helper: 1 rate-limited response max, then success.
-    // After cooldown, the single upstream re-enters rotation.
+  test("rotation to next key on rate-limit", async () => {
+    // Single key that rate-limits every call, then exhausts.
+    // This tests that the pool attempts key 0, fails, and returns exhausted.
     const pool = new Pool(
       "test",
       poolConfig({
-        keys: [{ KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1", TEST_RATE_LIMIT_COUNT: "1" }],
-        cooldownSeconds: 1,
+        keys: [{ KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" }],
       }),
-      100, // poll cooldowns every 100ms
     );
     await pool.start();
 
-    // First call hits rate limit — upstream becomes rate_limited
-    const first = await pool.routeCall("echo", {});
-    assertCallResult(first);
-    expect(first.isError).toBe(true);
-
-    // Wait for cooldown (cooldownSeconds=1) + poll tolerance
-    // Exception: integration test exercising real platform timer behavior
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 1500);
-    await promise;
-
-    // After cooldown, upstream is available; second call should succeed
-    const second = await pool.routeCall("echo", { msg: "after-cooldown" });
-    assertCallResult(second);
-    expect(second.isError).toBeUndefined();
-    expect(JSON.parse(second.content[0].text)).toEqual({ msg: "after-cooldown" });
+    const result = await pool.routeCall("echo", {});
+    assertCallResult(result);
+    expect(result.isError).toBe(true);
     await pool.close();
   });
 });

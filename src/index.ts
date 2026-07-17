@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -115,9 +115,7 @@ async function main(): Promise<void> {
       pool: poolName,
       tool: toolName,
       upstream: -1,
-      strategy: loaded.config.pools[poolName].strategy,
     });
-
     return await pool.routeCall(toolName, request.params.arguments ?? {}, verbose) as {
       content: Array<{ type: "text"; text: string; annotations?: unknown }>;
       isError?: boolean;

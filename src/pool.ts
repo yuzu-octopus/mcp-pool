@@ -1,123 +1,53 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { PoolConfig, UpstreamState, RoutingStrategy } from "./types.js";
+import type { PoolConfig } from "./types.js";
 import { log } from "./logger.js";
-import { RoundRobinStrategy, DepleteFirstStrategy } from "./strategies.js";
 
 export class Pool {
   readonly name: string;
   private config: PoolConfig;
-  private upstreams: UpstreamState[] = [];
-  private strategy: RoutingStrategy;
-  private cooldownTimer?: ReturnType<typeof setInterval>;
+  private cursor = 0;
+  private client?: Client;
   private cachedTools: Tool[] = [];
   private started = false;
-  private cooldownIntervalMs: number;
+  private routeLock: Promise<void> = Promise.resolve();
 
-  constructor(name: string, config: PoolConfig, cooldownIntervalMs = 30_000) {
+  constructor(name: string, config: PoolConfig) {
     this.name = name;
     this.config = config;
-    this.cooldownIntervalMs = cooldownIntervalMs;
-    this.strategy =
-      config.strategy === "round-robin"
-        ? new RoundRobinStrategy()
-        : new DepleteFirstStrategy();
   }
 
   async start(): Promise<void> {
-    const results = await Promise.allSettled(
-      this.config.keys.map(async (envVars, keyIndex) => {
-        const transport = new StdioClientTransport({
-          command: this.config.command,
-          args: this.config.args,
-          env: { ...process.env, ...envVars } as Record<string, string>,
-          cwd: this.config.cwd,
-        });
-        const client = new Client(
-          { name: "mcp-pool", version: "0.1.0" },
-          { capabilities: {} },
-        );
-        await client.connect(transport);
-        const toolsResult = await client.listTools();
-        const tools: Tool[] = toolsResult.tools as Tool[];
-        return { keyIndex, client, tools };
-      }),
-    );
-
-    const connected: Array<{ keyIndex: number; client: Client; tools: Tool[] }> = [];
-
-    for (const r of results) {
-      if (r.status === "fulfilled") {
-        connected.push(r.value);
-        log({
-          level: "info",
-          event: "upstream_start",
-          pool: this.name,
-          keyIndex: r.value.keyIndex,
-        });
-      } else {
-        log({
-          level: "error",
-          event: "upstream_error",
-          pool: this.name,
-          upstream: -1,
-          error: r.reason instanceof Error ? r.reason.message : String(r.reason),
-        });
-      }
-    }
-
-    const cleanup = () => Promise.allSettled(connected.map((c) => c.client.close()));
-
-    if (connected.length === 0) {
-      throw new Error(
-        `Pool "${this.name}": all upstreams failed to connect`,
-      );
-    }
-
-    const referenceTools = connected[0].tools;
-    for (let i = 1; i < connected.length; i++) {
-      const mismatch = findToolMismatch(referenceTools, connected[i].tools);
-      if (mismatch) {
-        log({
-          level: "info",
-          event: "upstream_tools_mismatch",
-          pool: this.name,
-          keyIndex: connected[i].keyIndex,
-          reason: mismatch,
-        });
-        await cleanup();
-        throw new Error(
-          `Pool "${this.name}" key ${connected[i].keyIndex} tools mismatch: ${mismatch}`,
-        );
-      }
-    }
-    this.cachedTools = referenceTools;
-    this.upstreams = this.config.keys.map((_, keyIndex) => {
-      const conn = connected.find((c) => c.keyIndex === keyIndex);
-      if (conn) {
-        return {
-          keyIndex,
-          status: "available" as const,
-          consecutiveErrors: 0,
-          client: conn.client,
-          tools: conn.tools,
-        };
-      }
-      return {
-        keyIndex,
-        status: "dead" as const,
-        consecutiveErrors: 0,
-        client: null as unknown as Client,
-        tools: [],
-      };
-    });
-
-    this.cooldownTimer = setInterval(() => this.checkCooldowns(), this.cooldownIntervalMs);
+    await this.spawnUpstream(0);
     this.started = true;
   }
 
+  /**
+   * Route a tool call through the pool. Serialized via promise chain to
+   * prevent races on this.client / this.cursor across await points.
+   * On rate-limit or transport error: close current upstream, advance
+   * to the next key, spawn a new one, retry. Tries every key before
+   * returning exhausted.
+   */
   async routeCall(
+    toolName: string,
+    args: Record<string, unknown>,
+    verbose?: boolean,
+  ): Promise<unknown> {
+    const prev = this.routeLock;
+    const next = Promise.withResolvers<void>();
+    this.routeLock = next.promise;
+    await prev;
+
+    try {
+      return await this.routeCallInner(toolName, args, verbose);
+    } finally {
+      next.resolve();
+    }
+  }
+
+  private async routeCallInner(
     toolName: string,
     args: Record<string, unknown>,
     verbose?: boolean,
@@ -129,30 +59,18 @@ export class Pool {
       };
     }
 
-    const maxRetries = this.upstreams.length;
+    const maxKeys = this.config.keys.length;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const available = this.upstreams.filter((u) => u.status === "available");
-      if (available.length === 0) {
-        log({
-          level: "error",
-          event: "all_exhausted",
-          pool: this.name,
-          available: 0,
-          total: this.upstreams.length,
-        });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `All ${this.upstreams.length} upstreams for '${this.name}' are rate-limited or dead. Retry after ${this.config.cooldownSeconds}s.`,
-            },
-          ],
-          isError: true,
-        };
+    for (let attempt = 0; attempt < maxKeys; attempt++) {
+      // Ensure we have a client for the current cursor position
+      if (!this.client) {
+        try {
+          await this.spawnUpstream(this.cursor);
+        } catch (err) {
+          this.cursor = (this.cursor + 1) % maxKeys;
+          continue;
+        }
       }
-
-      const upstream: UpstreamState = this.strategy.select(available);
 
       if (verbose) {
         log({
@@ -160,18 +78,17 @@ export class Pool {
           event: "call_tool",
           pool: this.name,
           tool: toolName,
-          upstream: upstream.keyIndex,
+          upstream: this.cursor,
           args,
         });
       }
 
       try {
-        const result = await upstream.client.callTool({
+        const result = await this.client!.callTool({
           name: toolName,
           arguments: args,
         });
 
-        // Check for rate-limit error via error text matching
         if (result.isError) {
           const errorText = stringifyContent(result.content);
           const isRateLimited = this.config.rateLimitPatterns.some((pat) =>
@@ -179,67 +96,58 @@ export class Pool {
           );
 
           if (isRateLimited) {
-            this.markRateLimited(upstream);
-            this.strategy.record(upstream, "rate_limited");
             log({
               level: "warn",
               event: "rate_limited",
               pool: this.name,
-              upstream: upstream.keyIndex,
-              cooldownUntil: new Date(upstream.cooldownUntil!).toISOString(),
+              upstream: this.cursor,
+              cooldownUntil: new Date().toISOString(),
             });
+            await this.closeCurrent();
+            this.cursor = (this.cursor + 1) % maxKeys;
             continue;
           }
 
           // Non-rate-limit tool error — return to client, no retry
-          upstream.consecutiveErrors = 0;
-        this.strategy.record(upstream, "success");
           return result;
         }
 
-        // Success
-        upstream.consecutiveErrors = 0;
-        this.strategy.record(upstream, "success");
         log({
           level: "trace",
           event: "call_tool",
           pool: this.name,
           tool: toolName,
-          upstream: upstream.keyIndex,
+          upstream: this.cursor,
           args,
         });
         return result;
       } catch (err) {
-        upstream.consecutiveErrors++;
-        upstream.status = "dead";
-        this.strategy.record(upstream, "error");
         log({
           level: "error",
           event: "upstream_error",
           pool: this.name,
-          upstream: upstream.keyIndex,
+          upstream: this.cursor,
           error: err instanceof Error ? err.message : String(err),
         });
-
-        if (upstream.consecutiveErrors >= this.config.maxConsecutiveErrors) {
-          log({
-            level: "error",
-            event: "upstream_dead",
-            pool: this.name,
-            upstream: upstream.keyIndex,
-            consecutiveErrors: upstream.consecutiveErrors,
-          });
-        }
-
+        await this.closeCurrent();
+        this.cursor = (this.cursor + 1) % maxKeys;
         continue;
       }
     }
+
+    log({
+      level: "error",
+      event: "all_exhausted",
+      pool: this.name,
+      available: 0,
+      total: maxKeys,
+    });
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `All ${this.upstreams.length} upstreams for '${this.name}' exhausted after retries.`,
+          text: `All ${maxKeys} keys for '${this.name}' exhausted after retries.`,
         },
       ],
       isError: true,
@@ -250,38 +158,63 @@ export class Pool {
     return this.cachedTools;
   }
 
-  private markRateLimited(upstream: UpstreamState): void {
-    upstream.status = "rate_limited";
-    upstream.consecutiveErrors++;
-    upstream.cooldownUntil = Date.now() + this.config.cooldownSeconds * 1000;
-  }
-
-  private checkCooldowns(): void {
-    const now = Date.now();
-    for (const u of this.upstreams) {
-      if (
-        u.status === "rate_limited" &&
-        u.cooldownUntil != null &&
-        now >= u.cooldownUntil
-      ) {
-        u.status = "available";
-        u.consecutiveErrors = 0;
-        u.cooldownUntil = undefined;
-        log({
-          level: "warn",
-          event: "cooldown_expired",
-          pool: this.name,
-          upstream: u.keyIndex,
-        });
-      }
-    }
-  }
-
   async close(): Promise<void> {
-    clearInterval(this.cooldownTimer);
-    await Promise.allSettled(
-      this.upstreams.map((u) => u.client?.close?.()),
+    await this.closeCurrent();
+  }
+
+  private async spawnUpstream(keyIndex: number): Promise<void> {
+    const envVars = this.config.keys[keyIndex];
+    const transport = new StdioClientTransport({
+      command: this.config.command,
+      args: this.config.args,
+      env: { ...process.env, ...envVars } as Record<string, string>,
+      cwd: this.config.cwd,
+    });
+
+    const client = new Client(
+      { name: "mcp-pool", version: "0.1.0" },
+      { capabilities: {} },
     );
+
+    let tools: Tool[];
+    try {
+      await client.connect(transport);
+      const toolsResult = await client.listTools();
+      tools = toolsResult.tools as Tool[];
+    } catch (err) {
+      await client.close().catch(() => {});
+      throw err;
+    }
+
+    // On first successful connection, cache and validate tools
+    if (this.cachedTools.length > 0) {
+      const mismatch = findToolMismatch(this.cachedTools, tools);
+      if (mismatch) {
+        await client.close();
+        throw new Error(
+          `Pool "${this.name}" key ${keyIndex} tools mismatch: ${mismatch}`,
+        );
+      }
+    } else {
+      this.cachedTools = tools;
+    }
+
+    this.client = client;
+    this.cursor = keyIndex;
+
+    log({
+      level: "info",
+      event: "upstream_start",
+      pool: this.name,
+      keyIndex,
+    });
+  }
+
+  private async closeCurrent(): Promise<void> {
+    if (this.client) {
+      await this.client.close();
+      this.client = undefined;
+    }
   }
 }
 
@@ -296,7 +229,7 @@ function findToolMismatch(a: Tool[], b: Tool[]): string | null {
   for (const [name, toolA] of mapA) {
     const toolB = mapB.get(name);
     if (!toolB) {
-      return `tool "${name}" missing from upstream B`;
+      return `tool "${name}" missing from upstream`;
     }
     const schemaA = JSON.stringify(toolA.inputSchema);
     const schemaB = JSON.stringify(toolB.inputSchema);

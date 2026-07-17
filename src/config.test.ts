@@ -61,18 +61,17 @@ describe("PoolConfigSchema", () => {
     expect(result.data.maxConsecutiveErrors).toBe(5);
   });
 
-  test("defaults applied for optional fields", () => {
+  test("optional fields are not required", () => {
     const result = PoolConfigSchema.safeParse({
       command: "echo",
       args: [],
       keys: [{ KEY: "val" }],
-      strategy: "deplete-first",
       rateLimitPatterns: ["rate_limit"],
     });
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.data.cooldownSeconds).toBe(300);
-    expect(result.data.maxConsecutiveErrors).toBe(3);
+    expect(result.data.cooldownSeconds).toBeUndefined();
+    expect(result.data.maxConsecutiveErrors).toBeUndefined();
   });
 });
 
