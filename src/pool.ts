@@ -67,6 +67,13 @@ export class Pool {
         try {
           await this.spawnUpstream(this.cursor);
         } catch (err) {
+          log({
+            level: "error",
+            event: "upstream_error",
+            pool: this.name,
+            upstream: this.cursor,
+            error: err instanceof Error ? err.message : String(err),
+          });
           this.cursor = (this.cursor + 1) % maxKeys;
           continue;
         }
