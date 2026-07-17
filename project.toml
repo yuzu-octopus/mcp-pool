@@ -101,7 +101,7 @@ body = "When a tool call arrives, mcp-pool strips the `{poolName}__` prefix to i
 
 [[sections.items]]
 title = "4. Recover"
-body = "On rate-limit or transport error, the current upstream is closed, the cursor advances to the next key, and a new subprocess spawns automatically."
+body = "On rate-limit or transport error, the current upstream is closed, the cursor advances to the next key, and a new subprocess spawns automatically. Rate-limited keys remain unavailable for the configured cooldown (300 seconds by default)."
 
 [[sections]]
 id = "config"
@@ -117,6 +117,9 @@ cells = ["args", "Yes", "CLI arguments"]
 cells = ["keys", "Yes", "Array of env-var objects, at least 1"]
 [[sections.rows]]
 cells = ["rateLimitPatterns", "Yes", "Regex patterns matched against error text"]
+
+[[sections.rows]]
+cells = ["cooldownSeconds", "No", "Seconds a rate-limited key is skipped; defaults to 300"]
 
 [[sections]]
 id = "stack"

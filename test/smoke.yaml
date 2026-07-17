@@ -5,6 +5,5 @@ pools:
     keys:
       - {KEY: "a"}
       - {KEY: "b", TEST_RATE_LIMIT_EVERY_N: "2", TEST_RATE_LIMIT_COUNT: "1"}
-    strategy: round-robin
     cooldownSeconds: 5
     rateLimitPatterns: ["rate_limit_exceeded"]

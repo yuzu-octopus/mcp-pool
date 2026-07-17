@@ -30,13 +30,14 @@ pools:
 |---|---|
 | `command` | Executable to spawn (required) |
 | `args` | CLI arguments |
-| `keys` | Array of env-var objects, one per key (at least 1) |
+| `keys` | Array of environment-variable objects, one per key (at least 1); values may be literal strings or `${NAME}` references |
 | `rateLimitPatterns` | Regex patterns matched against tool error text (required, at least 1 — safety gate) |
+| `cooldownSeconds` | Seconds a rate-limited key is skipped; defaults to 300 |
 | `cwd` | Working directory for the upstream process |
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
 
-Values support `${VAR}` expansion from environment variables.
+Values support `${VAR}` expansion from environment variables. An undefined reference is a configuration error.
 
 ## Usage
 
@@ -45,7 +46,7 @@ Values support `${VAR}` expansion from environment variables.
   "mcpServers": {
     "mcp-pool": {
       "command": "bunx",
-      "args": ["mcp-pool", "--config", "/path/to/mcp-pool.yaml"]
+      "args": ["mcp-pool@0.1.4", "--config", "/path/to/mcp-pool.yaml"]
     }
   }
 }
@@ -67,7 +68,7 @@ All logs are JSON lines on stderr (stdout is reserved for MCP protocol):
 
 ## Design
 
-- **Lazy failover**: 1 process per pool. Rate-limited/crashed keys are closed and replaced with the next key on demand.
+- **Lazy failover**: 1 process per pool. Rate-limited/crashed keys are closed and replaced with the next key on demand; rate-limited keys are skipped for `cooldownSeconds` (300 seconds by default).
 - **Serialized calls**: promise-chain mutex prevents races on shared state across `await` points.
 - **Tool validation**: each spawned upstream's tools are validated against the cached set (by name→schema map, order-independent).
 - **`rateLimitPatterns` is required**: without explicit patterns, all `isError` results are terminal — no retries. Use `[".*"]` for blanket retry on read-only pools.
@@ -76,6 +77,10 @@ All logs are JSON lines on stderr (stdout is reserved for MCP protocol):
 ## Development
 
 ```bash
-bun install
-bun test           # 22 tests (unit + integration)
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun run smoke
+bun run build
+bun run check:package
 ```

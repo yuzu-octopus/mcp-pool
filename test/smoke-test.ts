@@ -21,6 +21,9 @@ async function main() {
 
   await client.connect(transport);
   console.error("smoke: connected");
+  if (client.getServerVersion()?.version !== "0.1.4") {
+    throw new Error(`unexpected server version: ${client.getServerVersion()?.version}`);
+  }
 
   // List tools — should show prefixed names
   const toolsResult = await client.listTools();

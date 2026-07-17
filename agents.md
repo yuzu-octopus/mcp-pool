@@ -22,19 +22,17 @@ pools:
   <name>:
     command: string           # required
     args: string[]
-    keys: Record<string,string>[]  # at least 1
+    keys: Record<string,string>[]  # at least 1; literal or ${VAR} values
     rateLimitPatterns: string[]  # required, at least 1, all valid regex
+    cooldownSeconds?: number   # seconds a rate-limited key is skipped; defaults to 300
     cwd?: string
-    strategy?: string          # optional, ignored in lazy failover
-    cooldownSeconds?: number   # optional, ignored
-    maxConsecutiveErrors?: number  # optional, ignored
 ```
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
 
 ## Flow
 
-1. `loadConfig()` reads YAML, validates with Zod, expands `${VAR}` env refs
+1. `loadConfig()` reads YAML, expands `${VAR}` env refs (missing variables are errors), then validates with Zod
 2. For each pool, `Pool.start()` tries keys in order until one connects (retries across all keys); others spawned on-demand during failover
 3. First upstream's tools are cached as the pool's tool set; subsequent spawns validate tool consistency
 4. `Pool.routeCall()`: try current upstream → forward call → on rate-limit (error text matches `rateLimitPatterns`) → close current, advance to next key, spawn new upstream, retry
@@ -46,7 +44,7 @@ Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-p
 
 - **Lazy failover**: 1 process per pool at a time. On rate-limit, the current process is closed and a new one spawns with the next key. No warm standby processes.
 - **`rateLimitPatterns` safety gate**: without explicit patterns, all `isError` results are terminal. Use `[".*"]` for blanket retry on read-only pools.
-- **No cooldown timers**: rotation is immediate — no waiting for cooldown expiry.
+- **Per-key cooldown**: after a matching rate-limit error, that key is skipped for `cooldownSeconds` (300 seconds by default).
 - **Tool set validation on each spawn**: when a new upstream spawns, its tools are compared against the cached set (by name→schema map, order-independent). Mismatch → error, logged before that upstream is used.
 - **No persistent state**: everything resets on restart.
 - **Stdio only**: HTTP upstreams would need transport field + factory.
@@ -54,7 +52,8 @@ Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-p
 
 ## Test structure
 
-- `src/config.test.ts` — schema validation, YAML loading, env expansion (11 tests)
-- `src/pool.integration.test.ts` — startup, failover, key exhaustion, tool mismatch during failover (10 tests, spawns real subprocesses)
-- `test/bin-smoke.ts` — E2E via `mcp-pool` bin
+- `src/config.test.ts` — schema validation, YAML loading, and environment expansion
+- `src/pool.integration.test.ts` — startup, failover, key exhaustion, tool mismatch, and log redaction
+- `test/startup-cleanup.test.ts` — closes already-started pools when later startup fails
+- `test/bin-smoke.ts` and `test/smoke-test.ts` — E2E stdio smoke coverage
 - `test/helper-server.ts` — configurable via env: `TEST_CRASH_ON_START`, `TEST_RATE_LIMIT_EVERY_N`, `TEST_RATE_LIMIT_COUNT`, `TEST_CRASH_AFTER`, `TEST_TOOL_ERROR_TEXT`, `TEST_TOOLS_JSON`

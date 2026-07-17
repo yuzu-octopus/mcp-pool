@@ -1,8 +1,5 @@
 name: Check
 
-permissions:
-  contents: write
-
 on:
   push:
     branches: [main]
@@ -11,8 +8,25 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run smoke
+      - run: bun run build
+      - run: bun run check:package
+
+  generate-project-page:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,10 +34,8 @@ jobs:
           python-version: "3.11"
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libcairo2-dev fonts-jetbrains-mono
-      - name: Install uv
-        run: pip install uv
-      - name: Install dependencies
-        run: uv pip install --system jinja2 pillow cairosvg
+      - name: Install generator dependencies
+        run: pip install uv && uv pip install --system jinja2 pillow cairosvg
       - name: Fetch generator
         run: |
           mkdir -p /tmp/projectsite

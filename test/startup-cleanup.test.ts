@@ -18,7 +18,7 @@ async function waitForClosed(lifecycleFile: string): Promise<void> {
 
   try {
     // This cross-process integration test needs a bounded real-time wait for fs events.
-    await Promise.race([closed.promise, new Promise<void>((resolve) => AbortSignal.timeout(2_000).addEventListener("abort", resolve, { once: true }))]);
+    await Promise.race([closed.promise, new Promise<void>((resolve) => AbortSignal.timeout(2_000).addEventListener("abort", () => resolve(), { once: true }))]);
   } finally {
     watcher.close();
   }

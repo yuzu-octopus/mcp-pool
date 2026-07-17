@@ -6,6 +6,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, ConfigError } from "./config.js";
+import packageJson from "../package.json" with { type: "json" };
 import { Pool } from "./pool.js";
 import { log } from "./logger.js";
 
@@ -51,7 +52,7 @@ async function main(): Promise<void> {
   }
 
   const server = new Server(
-    { name: "mcp-pool", version: "0.1.0" },
+    { name: "mcp-pool", version: packageJson.version },
     { capabilities: { tools: {} } },
   );
 
