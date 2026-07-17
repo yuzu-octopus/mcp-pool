@@ -1,7 +1,7 @@
 [project]
 name = "mcp-pool"
 tagline = "MCP Key Pool Proxy"
-subtitle = "Pool multiple API keys across upstream MCP servers to distribute rate limits. One subprocess per pool, lazy failover, round-robin key rotation."
+subtitle = "mcp-pool is itself an MCP server. Pool multiple API keys per service and distribute tool calls across them — one active subprocess at a time, rotate keys on rate-limit."
 description = "MCP Key Pool Proxy — pool multiple API keys across rate-limited upstream MCP servers"
 github_url = "https://github.com/yuzu-octopus/mcp-pool"
 page_url = "https://yuzu-octopus.github.io/mcp-pool"
@@ -46,8 +46,8 @@ title = "Rate Limit Detection"
 body = "Configurable regex patterns matched against tool error text. Non-matching errors are returned to the client immediately without retry."
 
 [[sections.items]]
-title = "Round-Robin Rotation"
-body = "Keys are tried in order. On failure, the cursor advances to the next key. Wraps around after exhausting all keys."
+title = "Key Retry"
+body = "Keys are tried in order. Startup retries across all keys until one connects. On failure, advances to the next key."
 
 [[sections.items]]
 title = "Stdio Transport"
@@ -67,7 +67,7 @@ npm install -g mcp-pool
 cat > ~/.config/mcp-pool/mcp-pool.yaml << 'EOF'
 pools:
   brave-search:
-    command: npx
+    command: bunx
     args: ["-y", "@brave/brave-search-mcp-server"]
     keys:
       - {BRAVE_API_KEY: "${BRAVE_API_KEY_1}"}
@@ -78,7 +78,7 @@ pools:
 EOF
 
 # Run it
-mcp-pool
+bunx mcp-pool
 """
 
 [[sections]]
@@ -93,7 +93,7 @@ body = "Define pools in `mcp-pool.yaml`. Each pool = one MCP server type with N 
 
 [[sections.items]]
 title = "2. Start"
-body = "mcp-pool spawns one upstream subprocess per pool using the first available key. Subsequent keys are spawned on-demand during failover."
+body = "mcp-pool tries each key in order until one connects. Only one upstream subprocess runs at a time per pool."
 
 [[sections.items]]
 title = "3. Route"
