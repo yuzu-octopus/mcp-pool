@@ -12,10 +12,12 @@ export class Pool {
   private cachedTools: Tool[] = [];
   private started = false;
   private routeLock: Promise<void> = Promise.resolve();
+  private cooldowns: number[] = [];
 
   constructor(name: string, config: PoolConfig) {
     this.name = name;
     this.config = config;
+    this.cooldowns = config.keys.map(() => 0);
   }
 
   async start(): Promise<void> {
@@ -43,13 +45,6 @@ export class Pool {
     this.started = true;
   }
 
-  /**
-   * Route a tool call through the pool. Serialized via promise chain to
-   * prevent races on this.client / this.cursor across await points.
-   * On rate-limit or transport error: close current upstream, advance
-   * to the next key, spawn a new one, retry. Tries every key before
-   * returning exhausted.
-   */
   async routeCall(
     toolName: string,
     args: Record<string, unknown>,
@@ -80,9 +75,15 @@ export class Pool {
     }
 
     const maxKeys = this.config.keys.length;
+    const cooldownSec = this.config.cooldownSeconds ?? 300;
 
     for (let attempt = 0; attempt < maxKeys; attempt++) {
-      // Ensure we have a client for the current cursor position
+      // Skip keys still in cooldown
+      if (this.cooldowns[this.cursor] > Date.now()) {
+        this.cursor = (this.cursor + 1) % maxKeys;
+        continue;
+      }
+
       if (!this.client) {
         try {
           await this.spawnUpstream(this.cursor);
@@ -123,19 +124,19 @@ export class Pool {
           );
 
           if (isRateLimited) {
+            this.cooldowns[this.cursor] = Date.now() + cooldownSec * 1000;
             log({
               level: "warn",
               event: "rate_limited",
               pool: this.name,
               upstream: this.cursor,
-              cooldownUntil: new Date().toISOString(),
+              cooldownUntil: new Date(this.cooldowns[this.cursor]).toISOString(),
             });
             await this.closeCurrent();
             this.cursor = (this.cursor + 1) % maxKeys;
             continue;
           }
 
-          // Non-rate-limit tool error — return to client, no retry
           return result;
         }
 
@@ -161,7 +162,11 @@ export class Pool {
         continue;
       }
     }
-
+    const now = Date.now();
+    const active = this.cooldowns.filter((c) => c > now);
+    const retryAfter = active.length > 0
+      ? Math.ceil((Math.min(...active) - now) / 1000)
+      : cooldownSec;
     log({
       level: "error",
       event: "all_exhausted",
@@ -174,7 +179,7 @@ export class Pool {
       content: [
         {
           type: "text" as const,
-          text: `All ${maxKeys} keys for '${this.name}' exhausted after retries.`,
+          text: `All ${maxKeys} keys for '${this.name}' exhausted. Retry after ${retryAfter}s.`,
         },
       ],
       isError: true,
@@ -213,7 +218,6 @@ export class Pool {
       throw err;
     }
 
-    // On first successful connection, cache and validate tools
     if (this.cachedTools.length > 0) {
       const mismatch = findToolMismatch(this.cachedTools, tools);
       if (mismatch) {

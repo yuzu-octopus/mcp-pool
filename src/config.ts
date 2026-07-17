@@ -9,7 +9,7 @@ const PoolConfigSchema = z.object({
     .array(z.record(z.string()))
     .min(1, "keys must have at least one entry"),
   strategy: z.enum(["round-robin", "deplete-first"]).optional(),
-  cooldownSeconds: z.coerce.number().int().positive().optional(),
+  cooldownSeconds: z.coerce.number().int().positive().default(300),
   maxConsecutiveErrors: z.coerce.number().int().positive().optional(),
   rateLimitPatterns: z
     .array(z.string().min(1))

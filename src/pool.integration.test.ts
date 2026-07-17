@@ -167,7 +167,30 @@ describe("Pool routing", () => {
     const result = await pool.routeCall("echo", {});
     assertCallResult(result);
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/rate-limited|exhausted/i);
+    expect(result.content[0].text).toMatch(/retry after/i);
+    await pool.close();
+  });
+
+  test("cooldown prevents immediate retry after exhaustion", async () => {
+    const pool = new Pool(
+      "test",
+      poolConfig({
+        keys: [{ KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" }],
+        cooldownSeconds: 60,
+      }),
+    );
+    await pool.start();
+
+    const first = await pool.routeCall("echo", {});
+    assertCallResult(first);
+    expect(first.isError).toBe(true);
+
+    // Second call should also fail — same key still in cooldown
+    const second = await pool.routeCall("echo", {});
+    assertCallResult(second);
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toMatch(/retry after/i);
+
     await pool.close();
   });
 

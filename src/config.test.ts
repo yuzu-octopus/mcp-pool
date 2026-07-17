@@ -61,7 +61,7 @@ describe("PoolConfigSchema", () => {
     expect(result.data.maxConsecutiveErrors).toBe(5);
   });
 
-  test("optional fields are not required", () => {
+  test("optional fields get defaults", () => {
     const result = PoolConfigSchema.safeParse({
       command: "echo",
       args: [],
@@ -70,7 +70,7 @@ describe("PoolConfigSchema", () => {
     });
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.data.cooldownSeconds).toBeUndefined();
+    expect(result.data.cooldownSeconds).toBe(300);
     expect(result.data.maxConsecutiveErrors).toBeUndefined();
   });
 });
