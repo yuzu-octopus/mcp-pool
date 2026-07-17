@@ -23,15 +23,14 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Install dependencies
-        run: uv pip install --system jinja2 pillow cairosvg ruff pyright pytest
-      - name: Lint
-        run: ruff check genpage.py
-      - name: Type check
-        run: pyright genpage.py
-      - name: Test
-        run: if [ -d tests ]; then pytest tests/ -v; else echo "tests/ not tracked, skipping"; fi
+        run: uv pip install --system jinja2 pillow cairosvg
+      - name: Fetch generator
+        run: |
+          mkdir -p /tmp/projectsite
+          curl -sL https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/main/genpage.py -o /tmp/projectsite/genpage.py
+          curl -sL https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/main/template.html.j2 -o /tmp/projectsite/template.html.j2
       - name: Generate project page
-        run: python genpage.py --input project.toml --output docs/index.html
+        run: python /tmp/projectsite/genpage.py --input project.toml --output docs/index.html
       - name: Commit generated page
         run: |
           git config user.name "github-actions[bot]"
