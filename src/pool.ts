@@ -19,7 +19,27 @@ export class Pool {
   }
 
   async start(): Promise<void> {
-    await this.spawnUpstream(0);
+    const maxKeys = this.config.keys.length;
+    for (let attempt = 0; attempt < maxKeys; attempt++) {
+      try {
+        await this.spawnUpstream(this.cursor);
+        break;
+      } catch (err) {
+        log({
+          level: "error",
+          event: "upstream_error",
+          pool: this.name,
+          upstream: this.cursor,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        this.cursor = (this.cursor + 1) % maxKeys;
+        if (attempt === maxKeys - 1) {
+          throw new Error(
+            `Pool "${this.name}": all ${maxKeys} key(s) failed to connect`,
+          );
+        }
+      }
+    }
     this.started = true;
   }
 

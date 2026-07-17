@@ -50,7 +50,7 @@ describe("Pool startup", () => {
     await pool.close();
   });
 
-  test("tolerates one upstream crashing during startup", async () => {
+  test("tolerates later key crashing during startup", async () => {
     const pool = new Pool(
       "test",
       poolConfig({
@@ -65,14 +65,32 @@ describe("Pool startup", () => {
     await pool.close();
   });
 
-  test("fails when first upstream crashes during startup", async () => {
+  test("recovers when first key crashes during startup", async () => {
     const pool = new Pool(
       "test",
       poolConfig({
-        keys: [{ KEY: "a", TEST_CRASH_ON_START: "1" }],
+        keys: [
+          { KEY: "a", TEST_CRASH_ON_START: "1" },
+          { KEY: "b" },
+        ],
       }),
     );
-    await expect(pool.start()).rejects.toThrow(/Connection closed/i);
+    await pool.start();
+    expect(pool.getTools().length).toBeGreaterThan(0);
+    await pool.close();
+  });
+
+  test("fails when all keys crash during startup", async () => {
+    const pool = new Pool(
+      "test",
+      poolConfig({
+        keys: [
+          { KEY: "a", TEST_CRASH_ON_START: "1" },
+          { KEY: "b", TEST_CRASH_ON_START: "1" },
+        ],
+      }),
+    );
+    await expect(pool.start()).rejects.toThrow(/failed to connect/i);
   });
 
   test("detects tool mismatch on failover", async () => {
@@ -80,7 +98,7 @@ describe("Pool startup", () => {
       "test",
       poolConfig({
         keys: [
-          { KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" }, // first call rate-limits
+          { KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" },
           {
             KEY: "b",
             TEST_TOOLS_JSON: JSON.stringify([
@@ -92,7 +110,6 @@ describe("Pool startup", () => {
     );
     await pool.start();
     const result = await pool.routeCall("echo", {});
-    // Should be an error about tool mismatch during failover
     assertCallResult(result);
     expect(result.isError).toBe(true);
     await pool.close();
