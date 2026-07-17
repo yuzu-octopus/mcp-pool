@@ -107,7 +107,6 @@ export class Pool {
           pool: this.name,
           tool: toolName,
           upstream: this.cursor,
-          args,
         });
       }
 
@@ -140,14 +139,6 @@ export class Pool {
           return result;
         }
 
-        log({
-          level: "trace",
-          event: "call_tool",
-          pool: this.name,
-          tool: toolName,
-          upstream: this.cursor,
-          args,
-        });
         return result;
       } catch (err) {
         log({

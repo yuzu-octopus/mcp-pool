@@ -113,6 +113,21 @@ describe("Pool routing", () => {
     expect(JSON.parse(result.content[0].text)).toEqual({ message: "hello" });
     await pool.close();
   });
+  test("never logs raw tool arguments", async () => {
+    const pool = new Pool("test", poolConfig());
+    const original = console.error;
+    const lines: string[] = [];
+    console.error = (...values: unknown[]) => lines.push(values.join(" "));
+
+    try {
+      await pool.start();
+      await pool.routeCall("echo", { credential: "sensitive-test-value" }, true);
+      expect(lines.join("\n")).not.toContain("sensitive-test-value");
+    } finally {
+      await pool.close();
+      console.error = original;
+    }
+  });
 
   test("routeCall before start returns error", async () => {
     const pool = new Pool("test", poolConfig());

@@ -14,6 +14,14 @@ if (process.env.TEST_CRASH_ON_START === "1") {
   process.exit(1);
 }
 
+import { writeFileSync } from "node:fs";
+
+const lifecycleFile = process.env.TEST_LIFECYCLE_FILE;
+if (lifecycleFile) {
+  writeFileSync(lifecycleFile, "started");
+  process.on("exit", () => writeFileSync(lifecycleFile, "closed"));
+}
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {

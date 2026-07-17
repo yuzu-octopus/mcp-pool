@@ -39,10 +39,15 @@ async function main(): Promise<void> {
   const poolNames = Object.keys(loaded.config.pools);
 
   const pools: Pool[] = [];
-  for (const name of poolNames) {
-    const pool = new Pool(name, loaded.config.pools[name]);
-    await pool.start();
-    pools.push(pool);
+  try {
+    for (const name of poolNames) {
+      const pool = new Pool(name, loaded.config.pools[name]);
+      await pool.start();
+      pools.push(pool);
+    }
+  } catch (err) {
+    await Promise.allSettled(pools.map((pool) => pool.close()));
+    throw err;
   }
 
   const server = new Server(

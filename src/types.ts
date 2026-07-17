@@ -18,4 +18,4 @@ export type LogEvent =
   | { level: "warn"; event: "rate_limited"; pool: string; upstream: number; cooldownUntil: string }
   | { level: "error"; event: "all_exhausted"; pool: string; available: number; total: number }
   | { level: "error"; event: "upstream_error"; pool: string; upstream: number; error: string }
-  | { level: "trace"; event: "call_tool"; pool: string; tool: string; upstream: number; args: unknown };
+  | { level: "trace"; event: "call_tool"; pool: string; tool: string; upstream: number };
