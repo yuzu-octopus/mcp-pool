@@ -1,6 +1,6 @@
 {
   "name": "mcp-pool",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP Key Pool Proxy — pool multiple API keys across upstream MCP servers",
   "type": "module",
   "bin": {
@@ -30,6 +30,12 @@
     "type": "git",
     "url": "git+https://github.com/your-username/mcp-pool.git"
   },
-  "keywords": ["mcp", "model-context-protocol", "proxy", "rate-limit", "api-key"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "proxy",
+    "rate-limit",
+    "api-key"
+  ],
   "license": "MIT"
 }
