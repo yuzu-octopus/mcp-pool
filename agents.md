@@ -9,7 +9,7 @@ MCP proxy that pools multiple API keys for rate-limited upstream MCP servers. Sp
 | File | Purpose |
 |---|---|
 | `src/index.ts` | MCP server entry — parses `--config`/`--verbose`, prefixes tools on `list`, strips prefix on `call`, starts all pools |
-| `src/pool.ts` | Pool class — lazy failover: `start()` spawns first key, `routeCall()` retries across keys, `spawnUpstream()` spawns on-demand + validates tool set consistency |
+| `src/pool.ts` | Pool class — lazy failover: `start()` tries each key until one connects (retries across all keys), `routeCall()` retries across keys on rate-limit, `spawnUpstream()` spawns on-demand + validates tool set consistency |
 | `src/config.ts` | YAML loading, Zod validation with regex check on `rateLimitPatterns`, `${VAR}` expansion |
 | `src/types.ts` | `PoolConfig`, `LogEvent` |
 | `src/logger.ts` | Structured JSON logging to stderr |
@@ -35,7 +35,7 @@ Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-p
 ## Flow
 
 1. `loadConfig()` reads YAML, validates with Zod, expands `${VAR}` env refs
-2. For each pool, `Pool.start()` spawns the first upstream only (key 0) — others spawned on-demand
+2. For each pool, `Pool.start()` tries keys in order until one connects (retries across all keys); others spawned on-demand during failover
 3. First upstream's tools are cached as the pool's tool set; subsequent spawns validate tool consistency
 4. `Pool.routeCall()`: try current upstream → forward call → on rate-limit (error text matches `rateLimitPatterns`) → close current, advance to next key, spawn new upstream, retry
 5. Transport errors (crash/broken pipe) → same as rate-limit: close, advance, spawn, retry
