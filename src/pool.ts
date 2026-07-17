@@ -161,12 +161,11 @@ export class Pool {
         this.cursor = (this.cursor + 1) % maxKeys;
         continue;
       }
-    }
+  }
+
     const now = Date.now();
     const active = this.cooldowns.filter((c) => c > now);
-    const retryAfter = active.length > 0
-      ? Math.ceil((Math.min(...active) - now) / 1000)
-      : cooldownSec;
+
     log({
       level: "error",
       event: "all_exhausted",
@@ -175,11 +174,24 @@ export class Pool {
       total: maxKeys,
     });
 
+    if (active.length === 0) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `All ${maxKeys} keys for '${this.name}' failed to connect or are unavailable.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const retryAfter = Math.ceil((Math.min(...active) - now) / 1000);
     return {
       content: [
         {
           type: "text" as const,
-          text: `All ${maxKeys} keys for '${this.name}' exhausted. Retry after ${retryAfter}s.`,
+          text: `All ${maxKeys} keys for '${this.name}' are rate-limited. Retry after ${retryAfter}s.`,
         },
       ],
       isError: true,
