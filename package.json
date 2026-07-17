@@ -28,8 +28,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-username/mcp-pool.git"
+    "url": "git+https://github.com/yuzu-octopus/mcp-pool.git"
   },
+  "bugs": {
+    "url": "https://github.com/yuzu-octopus/mcp-pool/issues"
+  },
+  "homepage": "https://github.com/yuzu-octopus/mcp-pool#readme",
   "keywords": [
     "mcp",
     "model-context-protocol",

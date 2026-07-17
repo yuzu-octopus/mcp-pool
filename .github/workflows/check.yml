@@ -1,0 +1,41 @@
+name: Check
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libcairo2-dev fonts-jetbrains-mono
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv pip install --system jinja2 pillow cairosvg
+      - name: Generate project page
+        run: |
+          uv run python <(curl -sL https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/main/genpage.py) \
+            --input project.toml --output docs/index.html
+      - name: Commit generated page
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "ci: regenerate project page [skip ci]"
+            git push
+          fi

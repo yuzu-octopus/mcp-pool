@@ -1,0 +1,157 @@
+[project]
+name = "mcp-pool"
+tagline = "MCP Key Pool Proxy"
+subtitle = "Pool multiple API keys across upstream MCP servers to distribute rate limits. One subprocess per pool, lazy failover, round-robin key rotation."
+description = "MCP Key Pool Proxy — pool multiple API keys across rate-limited upstream MCP servers"
+github_url = "https://github.com/yuzu-octopus/mcp-pool"
+page_url = "https://yuzu-octopus.github.io/mcp-pool"
+logo_svg = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="4" y="10" width="56" height="44" rx="6" fill="none" stroke="var(--green)" stroke-width="2.5"/>
+  <rect x="10" y="18" width="18" height="12" rx="3" fill="var(--purple)" opacity="0.7"/>
+  <rect x="36" y="18" width="18" height="12" rx="3" fill="var(--purple)" opacity="0.5"/>
+  <circle cx="19" cy="44" r="5" fill="none" stroke="var(--green)" stroke-width="2"/>
+  <circle cx="45" cy="44" r="5" fill="none" stroke="var(--green)" stroke-width="2"/>
+  <line x1="19" y1="30" x2="19" y2="39" stroke="var(--green)" stroke-width="1.5"/>
+  <line x1="45" y1="30" x2="45" y2="39" stroke="var(--green)" stroke-width="1.5"/>
+  <text x="19" y="46" text-anchor="middle" fill="var(--green)" font-size="5" font-family="monospace">K1</text>
+  <text x="45" y="46" text-anchor="middle" fill="var(--green)" font-size="5" font-family="monospace">K2</text>
+  <path d="M28 24 L36 24" stroke="var(--cyan)" stroke-width="1.5" stroke-dasharray="2 1"/>
+</svg>
+"""
+
+[brand]
+tagline = "MCP Key Pool Proxy"
+
+[[sections]]
+id = "features"
+type = "features"
+title = "Features"
+icon = "grid"
+
+[[sections.items]]
+title = "Key Pooling"
+body = "Pool multiple API keys for rate-limited MCP servers. Distribute requests across keys to avoid exhausting any single quota."
+
+[[sections.items]]
+title = "Lazy Failover"
+body = "One subprocess per pool at a time. On rate-limit or crash, the current upstream is closed and a new one spawns with the next key."
+
+[[sections.items]]
+title = "Tool Prefixing"
+body = "All tools are prefixed with their pool name (e.g. `brave-search__brave_web_search`) to avoid name collisions across pools."
+
+[[sections.items]]
+title = "Rate Limit Detection"
+body = "Configurable regex patterns matched against tool error text. Non-matching errors are returned to the client immediately without retry."
+
+[[sections.items]]
+title = "Round-Robin Rotation"
+body = "Keys are tried in order. On failure, the cursor advances to the next key. Wraps around after exhausting all keys."
+
+[[sections.items]]
+title = "Stdio Transport"
+body = "All upstream MCP servers communicate via stdio subprocesses. No HTTP endpoints to manage."
+
+[[sections]]
+id = "quickstart"
+type = "code_block"
+title = "Quick Start"
+icon = "play"
+language = "bash"
+code = """
+# Install globally
+npm install -g mcp-pool
+
+# Create a config
+cat > ~/.config/mcp-pool/mcp-pool.yaml << 'EOF'
+pools:
+  brave-search:
+    command: npx
+    args: ["-y", "@brave/brave-search-mcp-server"]
+    keys:
+      - {BRAVE_API_KEY: "${BRAVE_API_KEY_1}"}
+      - {BRAVE_API_KEY: "${BRAVE_API_KEY_2}"}
+    rateLimitPatterns:
+      - "rate_limit_exceeded"
+      - "too many requests"
+EOF
+
+# Run it
+mcp-pool
+"""
+
+[[sections]]
+id = "how-it-works"
+type = "steps"
+title = "How It Works"
+icon = "layers"
+
+[[sections.items]]
+title = "1. Configure"
+body = "Define pools in `mcp-pool.yaml`. Each pool = one MCP server type with N API keys. Config is auto-discovered from `./mcp-pool.yaml`, `./.mcp-pool.yaml`, or `~/.config/mcp-pool/mcp-pool.yaml`."
+
+[[sections.items]]
+title = "2. Start"
+body = "mcp-pool spawns one upstream subprocess per pool using the first available key. Subsequent keys are spawned on-demand during failover."
+
+[[sections.items]]
+title = "3. Route"
+body = "When a tool call arrives, mcp-pool strips the `{poolName}__` prefix to identify the pool, then forwards the call to the active upstream."
+
+[[sections.items]]
+title = "4. Recover"
+body = "On rate-limit or transport error, the current upstream is closed, the cursor advances to the next key, and a new subprocess spawns automatically."
+
+[[sections]]
+id = "config"
+type = "table"
+title = "Config Reference"
+icon = "gear"
+headers = ["Field", "Required", "Description"]
+[[sections.rows]]
+cells = ["command", "Yes", "Executable to spawn (e.g. npx, bunx)"]
+[[sections.rows]]
+cells = ["args", "Yes", "CLI arguments"]
+[[sections.rows]]
+cells = ["keys", "Yes", "Array of env-var objects, at least 1"]
+[[sections.rows]]
+cells = ["rateLimitPatterns", "Yes", "Regex patterns matched against error text"]
+
+[[sections]]
+id = "stack"
+type = "stack"
+title = "Tech Stack"
+icon = "layers"
+
+[[sections.items]]
+name = "Bun"
+description = "runtime & package manager"
+
+[[sections.items]]
+name = "TypeScript"
+description = "type-safe source"
+
+[[sections.items]]
+name = "MCP SDK"
+description = "Model Context Protocol"
+
+[[sections.items]]
+name = "Zod"
+description = "schema validation"
+
+[[sections]]
+id = "links"
+type = "links"
+title = "Related"
+icon = "link"
+
+[[sections.items]]
+title = "npm"
+url = "https://www.npmjs.com/package/mcp-pool"
+description = "Published package"
+
+[[sections.items]]
+title = "GitHub"
+url = "https://github.com/yuzu-octopus/mcp-pool"
+description = "Source code"
