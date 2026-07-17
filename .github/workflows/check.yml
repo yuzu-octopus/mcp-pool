@@ -23,7 +23,13 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Install dependencies
-        run: uv pip install --system jinja2 pillow cairosvg
+        run: uv pip install --system jinja2 pillow cairosvg ruff pyright pytest
+      - name: Lint
+        run: ruff check genpage.py
+      - name: Type check
+        run: pyright genpage.py
+      - name: Test
+        run: if [ -d tests ]; then pytest tests/ -v; else echo "tests/ not tracked, skipping"; fi
       - name: Generate project page
         run: python genpage.py --input project.toml --output docs/index.html
       - name: Commit generated page
