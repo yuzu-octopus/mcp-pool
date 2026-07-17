@@ -2,24 +2,49 @@ import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 import { readFileSync, existsSync } from "node:fs";
 
-const PoolConfigSchema = z.object({
-  command: z.string().min(1, "command is required"),
-  args: z.array(z.string()),
-  keys: z
-    .array(z.record(z.string()))
-    .min(1, "keys must have at least one entry"),
-  strategy: z.enum(["round-robin", "deplete-first"]).optional(),
-  cooldownSeconds: z.coerce.number().int().positive().default(300),
-  maxConsecutiveErrors: z.coerce.number().int().positive().optional(),
-  rateLimitPatterns: z
-    .array(z.string().min(1))
-    .min(1, "rateLimitPatterns is required")
-    .refine(
-      (pats) => pats.every((p) => { try { new RegExp(p); return true } catch { return false } }),
-      { message: "all rateLimitPatterns entries must be valid regular expressions" },
-    ),
-  cwd: z.string().optional(),
-});
+const PoolConfigSchema = z
+  .object({
+    command: z.string().min(1, "command is required"),
+    args: z.array(z.string()),
+    keys: z.array(z.record(z.string())).min(1, "keys must have at least one entry"),
+    cooldownSeconds: z.coerce.number().int().positive().default(300),
+    rateLimitPatterns: z
+      .array(z.string().min(1))
+      .min(1, "rateLimitPatterns is required")
+      .refine(
+        (patterns) =>
+          patterns.every((pattern) => {
+            try {
+              new RegExp(pattern);
+              return true;
+            } catch {
+              return false;
+            }
+          }),
+        { message: "all rateLimitPatterns entries must be valid regular expressions" },
+      ),
+    cwd: z.string().optional(),
+    strategy: z.unknown().optional(),
+    maxConsecutiveErrors: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.strategy !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["strategy"],
+        message: "strategy is unsupported: mcp-pool always uses lazy failover; remove this field",
+      });
+    }
+    if (value.maxConsecutiveErrors !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["maxConsecutiveErrors"],
+        message: "maxConsecutiveErrors is unsupported; remove this field",
+      });
+    }
+  })
+  .transform(({ strategy: _strategy, maxConsecutiveErrors: _maxConsecutiveErrors, ...config }) => config);
 const ConfigFileSchema = z.object({
   pools: z.record(PoolConfigSchema),
 });
@@ -45,17 +70,24 @@ function resolveConfigPath(cliArg?: string): string {
   return "./mcp-pool.yaml";
 }
 
-function expandEnvVars(obj: unknown): unknown {
+function expandEnvVars(obj: unknown, configPath: string): unknown {
   if (typeof obj === "string") {
-    return obj.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] ?? "");
+    return obj.replace(/\$\{(\w+)\}/g, (_, name: string) => {
+      const value = process.env[name];
+      if (value === undefined) {
+        throw new ConfigError(`missing environment variable ${name} referenced by ${configPath}`);
+      }
+      return value;
+    });
   }
-  if (Array.isArray(obj)) return obj.map(expandEnvVars);
+  if (Array.isArray(obj)) return obj.map((item) => expandEnvVars(item, configPath));
   if (obj && typeof obj === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-      result[k] = expandEnvVars(v);
-    }
-    return result;
+    return Object.fromEntries(
+      Object.entries(obj as Record<string, unknown>).map(([key, value]) => [
+        key,
+        expandEnvVars(value, configPath),
+      ]),
+    );
   }
   return obj;
 }
@@ -90,7 +122,7 @@ export function loadConfig(cliArg?: string): LoadedConfig {
     throw new ConfigError(`invalid YAML in ${path}: ${msg}`);
   }
 
-  parsed = expandEnvVars(parsed);
+  parsed = expandEnvVars(parsed, path);
 
   const result = ConfigFileSchema.safeParse(parsed);
   if (!result.success) {

@@ -2,9 +2,7 @@ export interface PoolConfig {
   command: string;
   args: string[];
   keys: Record<string, string>[];
-  strategy?: "round-robin" | "deplete-first";
   cooldownSeconds?: number;
-  maxConsecutiveErrors?: number;
   rateLimitPatterns: string[];
   cwd?: string;
 }
