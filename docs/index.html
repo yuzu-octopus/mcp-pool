@@ -1124,7 +1124,7 @@ bunx mcp-pool
         
         <li><strong>3. Route</strong> &mdash; When a tool call arrives, mcp-pool strips the `{poolName}__` prefix to identify the pool, then forwards the call to the active upstream.</li>
         
-        <li><strong>4. Recover</strong> &mdash; On rate-limit or transport error, the current upstream is closed, the cursor advances to the next key, and a new subprocess spawns automatically.</li>
+        <li><strong>4. Recover</strong> &mdash; On rate-limit or transport error, the current upstream is closed, the cursor advances to the next key, and a new subprocess spawns automatically. Rate-limited keys remain unavailable for the configured cooldown (300 seconds by default).</li>
         
       </ul>
 
@@ -1153,6 +1153,8 @@ bunx mcp-pool
           <tr><td>keys</td><td>Yes</td><td>Array of env-var objects, at least 1</td></tr>
           
           <tr><td>rateLimitPatterns</td><td>Yes</td><td>Regex patterns matched against error text</td></tr>
+          
+          <tr><td>cooldownSeconds</td><td>No</td><td>Seconds a rate-limited key is skipped; defaults to 300</td></tr>
           
         </tbody>
       </table>
