@@ -77,6 +77,5 @@ All logs are JSON lines on stderr (stdout is reserved for MCP protocol):
 
 ```bash
 bun install
-bun test          # 21 tests (unit + integration)
-bun run test/bin-smoke.ts   # E2E smoke test
+bun test           # 22 tests (unit + integration)
 ```
