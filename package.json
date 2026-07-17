@@ -1,6 +1,6 @@
 {
   "name": "mcp-pool",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP Key Pool Proxy — pool multiple API keys across upstream MCP servers",
   "type": "module",
   "bin": {
