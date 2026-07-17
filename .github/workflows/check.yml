@@ -15,12 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout ProjectSite (generator + template)
-        uses: actions/checkout@v4
-        with:
-          repository: yuzu-octopus/ProjectSite
-          path: project-site
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -31,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system jinja2 pillow cairosvg
       - name: Generate project page
-        run: python project-site/genpage.py --input project.toml --output docs/index.html
+        run: python genpage.py --input project.toml --output docs/index.html
       - name: Commit generated page
         run: |
           git config user.name "github-actions[bot]"
