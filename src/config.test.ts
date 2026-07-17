@@ -14,7 +14,6 @@ describe("PoolConfigSchema", () => {
       command: "npx",
       args: ["-y", "test-server"],
       keys: [{ API_KEY: "abc" }],
-      strategy: "round-robin",
     });
     expect(result.success).toBe(false);
   });
@@ -24,7 +23,6 @@ describe("PoolConfigSchema", () => {
       command: "npx",
       args: [],
       keys: [],
-      strategy: "round-robin",
       rateLimitPatterns: ["rate_limit"],
     });
     expect(result.success).toBe(false);
@@ -35,7 +33,6 @@ describe("PoolConfigSchema", () => {
       command: "npx",
       args: [],
       keys: [{ KEY: "val" }],
-      strategy: "round-robin",
       rateLimitPatterns: ["[invalid"],
     });
     expect(result.success).toBe(false);
