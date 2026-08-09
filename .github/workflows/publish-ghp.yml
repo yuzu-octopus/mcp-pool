@@ -13,15 +13,19 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@yuzu-octopus"
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build
       # GitHub Packages only supports scoped names. Keep npmjs canonical
-      # (unscoped `mcp-pool`) and rewrite the name just for this registry.
+      # (unscoped `mcp-pool`) so the package name is rewritten just for this
+      # registry; setup-node already wrote the auth token from GITHUB_TOKEN.
       - run: npm pkg set name=@yuzu-octopus/mcp-pool
-      - name: Configure npm auth
-        run: printf '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' >> .npmrc
+      - name: Publish to GitHub Packages
+        run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish to GitHub Packages
-        run: npm publish --registry=https://npm.pkg.github.com
