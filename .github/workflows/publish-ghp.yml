@@ -19,7 +19,9 @@ jobs:
       # GitHub Packages only supports scoped names. Keep npmjs canonical
       # (unscoped `mcp-pool`) and rewrite the name just for this registry.
       - run: npm pkg set name=@yuzu-octopus/mcp-pool
-      - name: Publish to GitHub Packages
-        run: npm publish --registry=https://npm.pkg.github.com
+      - name: Configure npm auth
+        run: printf '//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}\n' >> .npmrc
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish to GitHub Packages
+        run: npm publish --registry=https://npm.pkg.github.com
