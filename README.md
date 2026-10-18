@@ -2,6 +2,45 @@
 
 **MCP Key Pool Proxy** — pool multiple API keys across upstream MCP servers to distribute rate limits.
 
+## Maintained fork
+
+This fork of [yuzu-octopus/mcp-pool](https://github.com/yuzu-octopus/mcp-pool)
+includes these fixes:
+
+- Concurrent failures retain the originating client and key index. Late errors
+  cannot cool down an unused healthy key or close its replacement client.
+- Known unflagged Context7 auth/quota error prefixes can trigger the configured
+  failover patterns; arbitrary documentation text does not trigger a retry.
+- HTTP mode creates a stateless MCP session per request, with shared pools.
+  Repeated and concurrent remote requests no longer reuse an invalid transport.
+- Exhaustion diagnostics include quota/auth failures, rather than describing
+  every upstream error as a request-frequency limit.
+- Opt-in transient retries recover read-only tool calls on the same key,
+  without replacing the upstream executable or cooling down healthy keys.
+
+Native installation needs Node.js 22 or newer and npm; Docker is optional:
+
+```sh
+git clone https://github.com/artempavlov/mcp-pool.git
+cd mcp-pool
+npm ci
+npm run build
+node dist/index.js --local --config /absolute/path/to/mcp-pool.yaml
+```
+
+Upstream executables must be installed separately and available through `PATH`
+or configured with absolute paths. Keep actual API keys in private runtime
+configuration, outside this repository. Tests run with Bun; the CLI runs on Node.
+
+`src/pool.failover.test.ts` covers concurrent/stale failures and Context7 error
+classification. `test/http-stateless.test.ts` exercises two real MCP HTTP clients
+with repeated requests. No paid service or real API key is needed by these tests.
+
+The optional `Dockerfile` builds this fork with `npm ci` and includes pinned Exa
+and Context7 executables. Mount a private YAML config at `/app/mcp-pool.yaml`;
+override the command with `--http --host 0.0.0.0 --port PORT --config
+/app/mcp-pool.yaml` for HTTP mode. `SOURCE_REVISION` labels the built revision.
+
 ## How it works
 
 mcp-pool is itself an MCP server. You configure one or more "pools" — each pool represents one upstream MCP server type (e.g. Brave Search) with N API keys.
@@ -44,10 +83,53 @@ pools:
 | `rateLimitPatterns` | Regex patterns matched against tool error text (required, at least 1 — safety gate) |
 | `cooldownSeconds` | Seconds a rate-limited key is skipped; defaults to 300 |
 | `cwd` | Working directory for the upstream process |
+| `transientRetry` | Optional bounded retries for explicitly listed replay-safe tools; see below |
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
 
 Values support `${VAR}` expansion from environment variables. An undefined reference is a configuration error.
+
+### Transient network failures
+
+Exa MCP 3.4.2 returns `web_search_exa error: fetch failed` for intermittent
+connection failures. Its internal retries cover certain HTTP errors but not
+these network failures. Configure retries in the pool while launching Exa directly:
+
+```yaml
+pools:
+  exa:
+    command: exa-mcp-server
+    args: []
+    keys:
+      - {EXA_API_KEY: "${EXA_KEY_1}"}
+      - {EXA_API_KEY: "${EXA_KEY_2}"}
+    rateLimitPatterns: ['\b(401|402|403|429)\b', '[Bb]udget|[Qq]uota']
+    transientRetry:
+      tools: [web_search_exa, web_fetch_exa]
+      errorPatterns: ['^web_(search|fetch)_exa error: fetch failed$']
+      delaysMs: [250, 750, 1500]
+```
+
+Retries are disabled by default. All three fields are required when enabled:
+nonempty tool names, valid error regexes, and one to five integer delays between
+0 and 10000 ms. Each delay permits one additional attempt per key. Only flagged
+MCP tool errors matching both the tool allowlist and an error pattern are retried.
+List only tools whose calls can be safely replayed. Use narrow error patterns;
+successful text and nonmatching failures pass through unchanged.
+
+Calls retry with the same arguments and key. Quota/auth patterns take precedence
+and retain normal key failover, even when transient patterns overlap. Backoff
+does not hold the swap mutex. If a concurrent caller replaces the client, the
+waiting call resumes through normal failover rather than reusing the old client.
+After the configured retries, the final upstream result is returned unchanged.
+Logs record `transient_retry`, tool, key index, attempt and delay, without
+arguments, credentials or raw error text. MCP transport exceptions retain the
+existing failover behavior.
+
+This handles the error exposed by Exa at the MCP boundary; it cannot recover
+nested network codes that Exa omits, or fix the underlying network connection.
+`src/pool.transient.test.ts` covers bounded retries, direct stdio recovery,
+quota priority, exclusions and concurrent replacement.
 
 ## Web server mode
 

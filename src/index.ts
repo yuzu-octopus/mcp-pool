@@ -209,15 +209,53 @@ async function runHttp(
 	host: string,
 ): Promise<void> {
 	const pools = await startPools(loaded.config.pools);
-	const transport = new StreamableHTTPServerTransport({
-		sessionIdGenerator: undefined,
-	});
-	await buildServer(pools, verbose).connect(transport);
 
 	const http = createHttpServer((req, res) => {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		if (req.method === "POST" && url.pathname === "/mcp") {
-			void transport.handleRequest(req, res);
+			// Stateless transports cannot be reused across HTTP requests. Each MCP
+			// session shares the pools, but owns its transport for this response.
+			const transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: undefined,
+				enableJsonResponse: true,
+			});
+			const session = buildServer(pools, verbose);
+			res.once("close", () => {
+				void session.close().catch(() => {});
+			});
+			void (async () => {
+				await session.connect(transport);
+				await transport.handleRequest(req, res);
+			})().catch(async (err: unknown) => {
+				log({
+					level: "error",
+					event: "http_request_error",
+					pool: "http",
+					upstream: 0,
+					error: err instanceof Error ? err.message : String(err),
+				});
+				if (!res.headersSent) {
+					res.writeHead(500, { "content-type": "application/json" });
+					res.end(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							error: { code: -32603, message: "MCP request failed" },
+							id: null,
+						}),
+					);
+				} else {
+					res.destroy();
+				}
+				await session.close().catch(() => {});
+			});
+			return;
+		}
+		if (
+			(req.method === "GET" || req.method === "DELETE") &&
+			url.pathname === "/mcp"
+		) {
+			res.writeHead(405, { allow: "POST" });
+			res.end();
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/health") {

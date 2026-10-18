@@ -1,6 +1,6 @@
 {
 	"name": "mcp-pool",
-	"version": "0.2.0",
+	"version": "0.2.1-artem.1",
 	"description": "MCP Key Pool Proxy — pool multiple API keys across upstream MCP servers",
 	"type": "module",
 	"bin": {
@@ -23,10 +23,10 @@
 	"scripts": {
 		"build": "rm -rf dist && tsc",
 		"typecheck": "tsc --project tsconfig.typecheck.json",
-		"prepare": "bun run build",
+		"prepare": "npm run build",
 		"start": "node dist/index.js",
 		"dev": "bun --watch src/index.ts",
-		"test": "bun test src/ test/startup-cleanup.test.ts test/daemon-sharing.test.ts",
+		"test": "bun test src/ test/",
 		"smoke": "bun run test/smoke-test.ts",
 		"check:package": "! npm pack --dry-run 2>&1 | grep -E 'dist/.*\\.test\\.(js|d\\.ts|js\\.map|d\\.ts\\.map)'",
 		"lint": "biome check",
@@ -34,12 +34,12 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/yuzu-octopus/mcp-pool.git"
+		"url": "git+https://github.com/artempavlov/mcp-pool.git"
 	},
 	"bugs": {
-		"url": "https://github.com/yuzu-octopus/mcp-pool/issues"
+		"url": "https://github.com/artempavlov/mcp-pool/issues"
 	},
-	"homepage": "https://github.com/yuzu-octopus/mcp-pool#readme",
+	"homepage": "https://github.com/artempavlov/mcp-pool#readme",
 	"keywords": [
 		"mcp",
 		"model-context-protocol",
