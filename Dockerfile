@@ -9,7 +9,7 @@ FROM node:22-bookworm-slim
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/artempavlov/mcp-pool" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
-RUN npm install --global exa-mcp-server@3.4.2 @upstash/context7-mcp@4.3.0
+RUN npm install --global exa-mcp-server@3.4.2 @upstash/context7-mcp@4.3.0 webscraping-ai-mcp@1.4.0
 WORKDIR /app
 COPY --from=build /build/package.json /opt/mcp-pool/package.json
 COPY --from=build /build/node_modules /opt/mcp-pool/node_modules

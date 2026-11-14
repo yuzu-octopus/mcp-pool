@@ -82,4 +82,25 @@ Runtime sockets live in `~/.mcp-pool/<sha256(configPath)[:16]>.sock`. **Not** `o
 - `test/bin-smoke.ts` and `test/smoke-test.ts` — E2E stdio smoke coverage
 - `test/helper-server.ts` — configurable via env: `TEST_CRASH_ON_START`, `TEST_RATE_LIMIT_EVERY_N`, `TEST_RATE_LIMIT_COUNT`, `TEST_CRASH_AFTER`, `TEST_TOOL_ERROR_TEXT`, `TEST_TOOLS_JSON`
 
-Native install/build uses npm and `package-lock.json`; Bun runs tests and the existing Bun workflows. The fork Dockerfile builds locked source and installs pinned Exa/Context7 upstreams without embedding runtime keys.
+Native install/build uses npm and `package-lock.json`; Bun runs tests and the existing Bun workflows. The fork Dockerfile builds locked source and installs pinned Exa, Context7, and WebScraping.AI upstreams without embedding runtime keys.
+
+## Deployment & update checklist
+
+Whenever `mcp-pool` or its pool configuration (`mcp-pool.yaml`) is updated, perform all of the following steps:
+
+1. **Repository (`src/`)**:
+   - Run `npm run format && npm run typecheck && npm run lint && npm run build && npm run check:package && bun test src/ test/`.
+   - If a new stdio upstream npm package is added, update `Dockerfile` (global install) and `/home/artem/.config/opencode/mcp-pool/native-tools/package.json`.
+   - Commit changes to git.
+2. **Local (`artem-laptop`)**:
+   - Reinstall the updated package into `/home/artem/.config/opencode/mcp-pool/native-tools` (`rm -rf .../native-tools/node_modules/mcp-pool && npm --prefix .../native-tools install --install-links /home/artem/data/projects_active/mcp-pool/src`).
+   - Update `/home/artem/.config/opencode/mcp-pool/mcp-pool.yaml`.
+   - Verify locally via `npm exec --offline --prefix /home/artem/.config/opencode/mcp-pool/native-tools -- mcp-pool --local --config /home/artem/.config/opencode/mcp-pool/mcp-pool.yaml`.
+   - Ensure OpenCode (`~/.config/opencode/opencode.jsonc`, `~/.local/share/opencode-v2/config/opencode/opencode.jsonc`) and Antigravity (`~/.gemini/config/mcp_config.json`) point to `mcp-pool` without duplicate direct entries; reconnect `mcp-pool` or restart `opencode serve --service` if already running.
+3. **Remote (`localserver:/storage/projects/mcp-pool`)**:
+   - Run `snapshot-create` before updating.
+   - Sync/pull the updated `source/` checkout on `localserver` and update `compose.yml` (`SOURCE_REVISION` / image tag) and `/storage/projects/mcp-pool/mcp-pool.yaml` (keep `0600`).
+   - Rebuild and restart: `docker compose --project-directory /storage/projects/mcp-pool -f /storage/projects/mcp-pool/compose.yml build mcp-pool && docker compose --project-directory /storage/projects/mcp-pool -f /storage/projects/mcp-pool/compose.yml up -d --no-build --wait mcp-pool`.
+   - Verify `http://localserver:37090/health` and live MCP tools via `http://localserver:37090/mcp`.
+4. **Clients (`hermes-vm`)**:
+   - Ensure `/root/.hermes/config.yaml` (`mcp_servers.mcp-pool.url: http://localserver:37090/mcp`, `enabled: true`) and OpenCode configs (`/root/.config/opencode/opencode.json`) are connected to `http://localserver:37090/mcp` and restart `hermes-gateway` if `config.yaml` changed, then verify tools from `hermes-vm`.
