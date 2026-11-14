@@ -20,12 +20,16 @@ MCP proxy that pools multiple API keys for rate-limited upstream MCP servers. Sp
 ```yaml
 pools:
   <name>:
-    command: string           # required
-    args: string[]
-    keys: Record<string,string>[]  # at least 1; literal or ${VAR} values
+    transport?: "stdio" | "http" | "sse" # defaults to "stdio"
+    command?: string          # required for stdio
+    args?: string[]           # stdio args (defaults to [])
+    env?: Record<string,string> # shared env vars for stdio
+    cwd?: string              # stdio working directory
+    url?: string              # required for http/sse
+    headers?: Record<string,string> # shared headers for http/sse
+    keys: Record<string,string>[]  # at least 1; env vars (stdio) or headers (http/sse); literal or ${VAR}
     rateLimitPatterns: string[]  # required, at least 1, all valid regex
     cooldownSeconds?: number   # seconds a rate-limited key is skipped; defaults to 300
-    cwd?: string
     transientRetry?:          # opt in only for replay-safe tools
       tools: string[]         # exact upstream tool names
       errorPatterns: string[] # valid regexes matching flagged tool errors
@@ -58,12 +62,12 @@ Runtime sockets live in `~/.mcp-pool/<sha256(configPath)[:16]>.sock`. **Not** `o
 - **Lazy failover**: 1 process per pool at a time. On rate-limit, the current process is closed and a new one spawns with the next key. No warm standby processes.
 - **`rateLimitPatterns` safety gate**: without explicit patterns, all `isError` results are terminal. Use `[".*"]` for blanket retry on read-only pools.
 - **Per-key cooldown**: after a matching rate-limit error, that key is skipped for `cooldownSeconds` (300 seconds by default).
-- **Unflagged error compatibility**: known Context7 auth/quota prefixes are treated as error candidates, still gated by configured `rateLimitPatterns`. Ordinary documentation mentioning errors is returned unchanged.
+- **Unflagged error compatibility**: known Context7 auth/quota prefixes and ScrapingAnt `SCRAPING FAILED` responses are treated as error candidates, still gated by configured `rateLimitPatterns`. Ordinary documentation mentioning errors is returned unchanged.
 - **Stateless HTTP ownership**: one MCP session/transport per POST; pools are shared. Response close releases the session; GET/DELETE `/mcp` return 405.
 - **Tool set validation on each spawn**: when a new upstream spawns, its tools are compared against the cached set (by name→schema map, order-independent). Mismatch → error, logged before that upstream is used.
 - **Parallel pool startup**: `Promise.allSettled` starts all pools at once; any failure closes the ones that started and rethrows. Removes the head-of-line stall of a slow upstream.
 - **No persistent state**: everything resets on restart.
-- **Stdio upstreams only**: HTTP upstreams would need transport field + factory.
+- **Upstream transports**: supports `stdio` (default), `http` (Streamable HTTP), and `sse`.
 - **Resource cleanup**: `spawnUpstream` cleans up client on connection/tool-list failure; tool mismatch also closes the client before throwing.
 
 ## Test structure

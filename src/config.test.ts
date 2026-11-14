@@ -136,6 +136,72 @@ describe("PoolConfigSchema", () => {
 		]);
 		expect(result.data.cooldownSeconds).toBe(300);
 	});
+
+	test("accepts http and sse transports with url and headers", () => {
+		const httpResult = PoolConfigSchema.safeParse({
+			transport: "http",
+			url: "https://api.scrapingant.com/mcp",
+			headers: { "X-Client": "mcp-pool" },
+			keys: [{ "x-api-key": "key-one" }],
+			rateLimitPatterns: ["401|429"],
+		});
+		expect(httpResult.success).toBe(true);
+		if (httpResult.success) {
+			expect(httpResult.data.transport).toBe("http");
+			expect(httpResult.data.url).toBe("https://api.scrapingant.com/mcp");
+		}
+
+		const sseResult = PoolConfigSchema.safeParse({
+			transport: "sse",
+			url: "https://example.com/sse",
+			keys: [{ Authorization: "Bearer token" }],
+			rateLimitPatterns: ["401|429"],
+		});
+		expect(sseResult.success).toBe(true);
+	});
+
+	test("validates transport-specific fields", () => {
+		expect(
+			PoolConfigSchema.safeParse({
+				transport: "http",
+				keys: [{ "x-api-key": "k" }],
+				rateLimitPatterns: ["429"],
+			}).success,
+		).toBe(false);
+
+		expect(
+			PoolConfigSchema.safeParse({
+				transport: "http",
+				url: "https://example.com/mcp",
+				command: "echo",
+				keys: [{ "x-api-key": "k" }],
+				rateLimitPatterns: ["429"],
+			}).success,
+		).toBe(false);
+
+		expect(
+			PoolConfigSchema.safeParse({
+				command: "echo",
+				url: "https://example.com/mcp",
+				keys: [{ KEY: "k" }],
+				rateLimitPatterns: ["429"],
+			}).success,
+		).toBe(false);
+
+		const stdioWithEnv = PoolConfigSchema.safeParse({
+			command: "webscraping-ai-mcp",
+			env: { WEBSCRAPING_AI_ENABLE_CONTENT_SANDBOXING: "true" },
+			keys: [{ WEBSCRAPING_AI_API_KEY: "k" }],
+			rateLimitPatterns: ["403|429"],
+		});
+		expect(stdioWithEnv.success).toBe(true);
+		if (stdioWithEnv.success) {
+			expect(stdioWithEnv.data.args).toEqual([]);
+			expect(stdioWithEnv.data.env).toEqual({
+				WEBSCRAPING_AI_ENABLE_CONTENT_SANDBOXING: "true",
+			});
+		}
+	});
 });
 
 describe("ConfigFileSchema", () => {

@@ -77,12 +77,16 @@ pools:
 
 | Field | Description |
 |---|---|
-| `command` | Executable to spawn (required) |
-| `args` | CLI arguments |
-| `keys` | Array of environment-variable objects, one per key (at least 1); values may be literal strings or `${NAME}` references |
-| `rateLimitPatterns` | Regex patterns matched against tool error text (required, at least 1 — safety gate) |
+| `transport` | Upstream transport: `stdio` (default), `http` (Streamable HTTP), or `sse` |
+| `command` | Executable to spawn (required for `stdio`) |
+| `args` | CLI arguments (`stdio`, defaults to `[]`) |
+| `env` | Shared environment variables for `stdio` |
+| `cwd` | Working directory for the `stdio` upstream process |
+| `url` | Upstream MCP endpoint URL (required for `http`/`sse`) |
+| `headers` | Shared HTTP headers for `http`/`sse` |
+| `keys` | Array of key objects, one per key (at least 1): env vars for `stdio`, or HTTP headers for `http`/`sse`; values may be literal strings or `${NAME}` references |
+| `rateLimitPatterns` | Regex patterns matched against tool/transport error text (required, at least 1 — safety gate) |
 | `cooldownSeconds` | Seconds a rate-limited key is skipped; defaults to 300 |
-| `cwd` | Working directory for the upstream process |
 | `transientRetry` | Optional bounded retries for explicitly listed replay-safe tools; see below |
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
