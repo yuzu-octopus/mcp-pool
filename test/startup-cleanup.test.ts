@@ -167,7 +167,14 @@ test("--help-detailed exits 0 with the setup guide and no daemon", () => {
 	try {
 		const paths = runtimePaths(configFile);
 		const proc = Bun.spawnSync({
-			cmd: ["bun", "run", "src/index.ts", "--help-detailed", "--config", configFile],
+			cmd: [
+				"bun",
+				"run",
+				"src/index.ts",
+				"--help-detailed",
+				"--config",
+				configFile,
+			],
 			stdout: "pipe",
 			stderr: "pipe",
 			cwd: join(import.meta.dir, ".."),
@@ -180,7 +187,7 @@ test("--help-detailed exits 0 with the setup guide and no daemon", () => {
 		expect(out).toContain("transport: http");
 		expect(out).toContain("rateLimitPatterns");
 		expect(out).toContain("cooldownSeconds");
-		expect(out).toContain("${VAR}");
+		expect(out).toContain("${" + "VAR}");
 		expect(out).toContain("Serving modes");
 		expect(out).toContain("JSON lines on stderr");
 		expect(existsSync(paths.socket)).toBe(false);
@@ -191,7 +198,9 @@ test("--help-detailed exits 0 with the setup guide and no daemon", () => {
 });
 
 test("--help-detailed needs no config file on disk", () => {
-	const directory = mkdtempSync(join(tmpdir(), "mcp-pool-help-detailed-noconfig-"));
+	const directory = mkdtempSync(
+		join(tmpdir(), "mcp-pool-help-detailed-noconfig-"),
+	);
 	try {
 		const proc = Bun.spawnSync({
 			cmd: [
