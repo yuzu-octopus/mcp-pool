@@ -52,7 +52,7 @@ Pin upstream versions for reproducible cold starts: `args: ["-y", "firecrawl-mcp
 | `env` | Extra environment variables for the upstream process (stdio only) |
 | `transientRetry` | Opt-in same-key retries for listed tools whose error text matches (delays in ms, up to 5 attempts) |
 
-Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
+Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./mcp-pool.yml`, `./.mcp-pool.yaml`, `./.mcp-pool.yml`, global `mcp-pool.yaml`, global `mcp-pool.yml` (under the user config directory).
 
 Values support `${VAR}` expansion from environment variables. An undefined reference is a configuration error.
 
@@ -62,7 +62,7 @@ Values support `${VAR}` expansion from environment variables. An undefined refer
 mcp-pool --http --port 3000
 ```
 
-Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so remote clients and non-stdio hosts can use the same pools. `GET /health` returns pool count. Bind to `0.0.0.0` (`--host 0.0.0.0`) to accept remote connections; the default `127.0.0.1` is local only.
+Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so remote clients and non-stdio hosts can use the same pools. `GET /health` returns `{status:'ok', tools:<pool count>}`. Bind to `0.0.0.0` (`--host 0.0.0.0`) to accept remote connections; the default `127.0.0.1` is local only.
 
 ## Usage
 

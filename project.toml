@@ -50,8 +50,8 @@ title = "Key Retry"
 body = "Keys are tried in order. Startup retries across all keys until one connects. On failure, advances to the next key."
 
 [[sections.items]]
-title = "Stdio Transport"
-body = "All upstream MCP servers communicate via stdio subprocesses. No HTTP endpoints to manage."
+title = "Transports"
+body = "Stdio subprocesses by default, with remote http/sse upstreams supported per pool via url + headers."
 
 [[sections]]
 id = "quickstart"
@@ -60,11 +60,9 @@ title = "Quick Start"
 icon = "play"
 language = "bash"
 code = """
-# Install globally
-npm install -g mcp-pool
-
+# No install needed — run directly
 # Create a config
-cat > ~/.config/mcp-pool/mcp-pool.yaml << 'EOF'
+cat > mcp-pool.yaml << 'EOF'
 pools:
   brave-search:
     command: bunx
@@ -79,7 +77,7 @@ EOF
 
 # Run it
 bunx mcp-pool
-# Install fetches a prebuilt platform binary via optionalDependencies (override: MCP_POOL_BINARY; rebuild: mcp-pool --rebuild); without one it runs node dist/index.js (same flags, slower cold start).
+# Run fetches a prebuilt platform binary via optionalDependencies (override: MCP_POOL_BINARY; rebuild: mcp-pool --rebuild); without one it runs node dist/index.js (same flags, slower cold start).
 """
 
 [[sections]]
@@ -90,7 +88,7 @@ icon = "layers"
 
 [[sections.items]]
 title = "1. Configure"
-body = "Define pools in `mcp-pool.yaml`. Each pool = one MCP server type with N API keys. Config is auto-discovered from `./mcp-pool.yaml`, `./.mcp-pool.yaml`, or `~/.config/mcp-pool/mcp-pool.yaml`."
+body = "Define pools in `mcp-pool.yaml`. Each pool = one MCP server type with N API keys. Config is auto-discovered from `./mcp-pool.yaml`, `./mcp-pool.yml`, `./.mcp-pool.yaml`, `./.mcp-pool.yml`, or the global user-config `mcp-pool.yaml`/`mcp-pool.yml`."
 
 [[sections.items]]
 title = "2. Start"
@@ -111,9 +109,9 @@ title = "Config Reference"
 icon = "gear"
 headers = ["Field", "Required", "Description"]
 [[sections.rows]]
-cells = ["command", "Yes", "Executable to spawn (e.g. npx, bunx)"]
+cells = ["command", "Yes (stdio only)", "Executable to spawn (e.g. npx, bunx)"]
 [[sections.rows]]
-cells = ["args", "Yes", "CLI arguments"]
+cells = ["args", "No (stdio only)", "CLI arguments"]
 [[sections.rows]]
 cells = ["keys", "Yes", "Array of env-var objects, at least 1"]
 [[sections.rows]]
@@ -121,6 +119,18 @@ cells = ["rateLimitPatterns", "Yes", "Regex patterns matched against error text"
 
 [[sections.rows]]
 cells = ["cooldownSeconds", "No", "Seconds a rate-limited key is skipped; defaults to 300"]
+[[sections.rows]]
+cells = ["transport", "No", "stdio (default), http, or sse for remote upstreams"]
+[[sections.rows]]
+cells = ["url", "Yes (http/sse)", "Upstream URL"]
+[[sections.rows]]
+cells = ["headers", "No (http/sse)", "Extra HTTP headers merged under each per-key entry"]
+[[sections.rows]]
+cells = ["env", "No (stdio only)", "Extra environment variables for the upstream process"]
+[[sections.rows]]
+cells = ["cwd", "No (stdio only)", "Working directory for the upstream process"]
+[[sections.rows]]
+cells = ["transientRetry", "No", "Opt-in same-key retries for listed tools whose error text matches"]
 
 [[sections]]
 id = "stack"

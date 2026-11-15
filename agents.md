@@ -34,7 +34,7 @@ pools:
     transientRetry?: { tools: string[]; errorPatterns: string[]; delaysMs: number[] }  # opt-in same-key retries, up to 5 delays of 0-10000ms
 ```
 
-Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
+Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./mcp-pool.yml`, `./.mcp-pool.yaml`, `./.mcp-pool.yml`, global `mcp-pool.yaml`, global `mcp-pool.yml` (under the user config directory).
 
 Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned `bunx -y <pkg>` refloats on every fresh cache. Verified 2026-11-15: `tavily-mcp@0.2.22`, `exa-mcp-server@3.4.3`, `firecrawl-mcp@3.40.0`, `@brave/brave-search-mcp-server@2.1.4` (brave needs an API key even to list tools).
 

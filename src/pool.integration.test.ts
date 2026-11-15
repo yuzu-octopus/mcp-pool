@@ -509,7 +509,7 @@ describe("list_changed refresh and secret redaction (hardening)", () => {
 		const { port } = httpServer.address() as AddressInfo;
 		const pool = new Pool("refresh", {
 			transport: "http",
-			url: ["http:", "", "127.0.0.1:" + port, "mcp"].join("/"),
+			url: ["http:", "", `127.0.0.1:${port}`, "mcp"].join("/"),
 			keys: [{ "x-api-key": "refresh-key" }],
 			rateLimitPatterns: ["rate_limit_exceeded"],
 		});
@@ -540,7 +540,7 @@ describe("list_changed refresh and secret redaction (hardening)", () => {
 						KEY: secret,
 						TEST_TOOLS_JSON: JSON.stringify([
 							{
-								name: "tool-" + secret,
+								name: `tool-${secret}`,
 								inputSchema: { type: "object" as const },
 							},
 						]),
@@ -552,7 +552,7 @@ describe("list_changed refresh and secret redaction (hardening)", () => {
 		);
 		try {
 			await pool.start();
-			const result = await pool.routeCall("tool-" + secret, {});
+			const result = await pool.routeCall(`tool-${secret}`, {});
 			assertCallResult(result);
 			expect(result.isError).toBe(true);
 			const dumped = lines.join("\n");

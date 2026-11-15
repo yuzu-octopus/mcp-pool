@@ -8,8 +8,8 @@ import {
 	connectOrSpawn,
 	daemonSpawnArgs,
 	ensureRuntimeDir,
-	writeStatus,
 	type RuntimePaths,
+	writeStatus,
 } from "./ipc.js";
 
 const CFG = "/tmp/mcp-pool-test.yaml";
@@ -98,11 +98,17 @@ describe("connectOrSpawn single-spawn (CORRECT-07)", () => {
 					server.listen(socket);
 				}, 300);
 			};
-			const sock = await connectOrSpawn(paths, join(dir, "nope.yaml"), false, slowSpawn);
+			const sock = await connectOrSpawn(
+				paths,
+				join(dir, "nope.yaml"),
+				false,
+				slowSpawn,
+			);
 			sock.destroy();
 			expect(spawns).toBe(1);
 		} finally {
-			if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+			const s = server;
+			if (s) await new Promise<void>((resolve) => s.close(() => resolve()));
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
