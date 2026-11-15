@@ -98,13 +98,7 @@ jobs:
           stage win32-x64 mcp-pool-win32-x64.exe
           stage win32-arm64 mcp-pool-win32-arm64.exe
       - name: Version equality gate (no skew across the family)
-        run: |
-          root="$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
-          for d in platform/*/; do
-            v="$(F="$d/package.json" bun -e 'console.log((await Bun.file(process.env.F).json()).version)')"
-            [ "$v" = "$root" ] || { echo "version skew: $d is $v, root is $root"; exit 1; }
-          done
-          echo "versions lockstep at $root"
+        run: scripts/check-versions.sh
       - name: Publish platform packages, then main
         run: |
           for d in platform/*/; do (cd "$d" && npm publish --provenance); done
