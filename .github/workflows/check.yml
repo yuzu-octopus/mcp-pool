@@ -32,8 +32,120 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun build --compile src/index.ts --outfile /tmp/mcp-pool-ci --minify
-      - run: printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /tmp/mcp-pool-ci --local --config test/smoke.yaml | grep -q smoke__
-      - run: printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /tmp/mcp-pool-ci --config test/smoke.yaml | grep -q smoke__
+      # NOTE: the proxy lingers after stdin EOF by design (server.close()
+      # without pools.close()/exit — a src/ matter, out of scope), so the
+      # bare `binary | grep -q` shape hangs forever once all output flushes
+      # before grep exits. Background + poll + kill keeps the same coverage
+      # without the hang.
+      - name: Compiled binary handshake (--local)
+        run: |
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > /tmp/handshake.txt
+          /tmp/mcp-pool-ci --local --config test/smoke.yaml < /tmp/handshake.txt > /tmp/handshake-out.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do grep -q smoke__ /tmp/handshake-out.txt 2>/dev/null && break; sleep 0.5; done
+          grep -q smoke__ /tmp/handshake-out.txt
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          exit $rc
+      - name: Compiled binary handshake (daemon)
+        run: |
+          /tmp/mcp-pool-ci --config test/smoke.yaml < /tmp/handshake.txt > /tmp/handshake-daemon-out.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do grep -q smoke__ /tmp/handshake-daemon-out.txt 2>/dev/null && break; sleep 0.5; done
+          grep -q smoke__ /tmp/handshake-daemon-out.txt
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          exit $rc
+
+  binary-matrix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Build all platform binaries
+        run: scripts/build-binaries.sh "$(bun -e 'console.log((await Bun.file("package.json").json()).version)')" /tmp/mcp-pool-bins
+      - name: All legs exist, non-empty, executable
+        run: |
+          for t in linux-x64 linux-x64-musl linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
+            f="/tmp/mcp-pool-bins/mcp-pool-$t"
+            case "$t" in win32-*) f="$f.exe" ;; esac
+            test -s "$f" || { echo "missing or empty: $f"; exit 1; }
+            test -x "$f" || { echo "not executable: $f"; exit 1; }
+          done
+          file /tmp/mcp-pool-bins/*
+      - name: Native handshake (--local + daemon)
+        run: |
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' > /tmp/handshake.txt
+          /tmp/mcp-pool-bins/mcp-pool-linux-x64 --local --config test/smoke.yaml < /tmp/handshake.txt > /tmp/matrix-local-out.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do grep -q smoke__ /tmp/matrix-local-out.txt 2>/dev/null && break; sleep 0.5; done
+          grep -q smoke__ /tmp/matrix-local-out.txt
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          exit $rc
+      - name: Shim handshake (native binary via lookup)
+        run: |
+          mkdir -p /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin
+          cp /tmp/mcp-pool-bins/mcp-pool-linux-x64 /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin/
+          chmod +x /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin/*
+          cp "$GITHUB_WORKSPACE/platform/linux-x64/package.json" /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/package.json
+          cp "$GITHUB_WORKSPACE/bin/mcp-pool.js" /tmp/shim-probe/mcp-pool.js
+          chmod +x /tmp/shim-probe/mcp-pool.js
+          /tmp/shim-probe/mcp-pool.js --local --config "$GITHUB_WORKSPACE/test/smoke.yaml" < /tmp/handshake.txt > /tmp/matrix-shim-out.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do grep -q smoke__ /tmp/matrix-shim-out.txt 2>/dev/null && break; sleep 0.5; done
+          grep -q smoke__ /tmp/matrix-shim-out.txt
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          exit $rc
+      - name: Fallback handshake (unknown platform -> dist)
+        run: |
+          _MCP_POOL_TEST_PLATFORM=sunos-sparc-glibc node "$GITHUB_WORKSPACE/bin/mcp-pool.js" --local --config "$GITHUB_WORKSPACE/test/smoke.yaml" < /tmp/handshake.txt > /tmp/matrix-fallback-out.txt 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do grep -q smoke__ /tmp/matrix-fallback-out.txt 2>/dev/null && break; sleep 0.5; done
+          grep -q smoke__ /tmp/matrix-fallback-out.txt
+          rc=$?
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          exit $rc
+      - name: Lookup-table assertion (incl. musl row, unknown fallback)
+        run: |
+          node --input-type=module -e "
+          import('$GITHUB_WORKSPACE/bin/mcp-pool.js').then((m) => {
+            const expect = {
+              'darwin-arm64-glibc': '@yuzu-octopus/mcp-pool-darwin-arm64',
+              'darwin-x64-glibc': '@yuzu-octopus/mcp-pool-darwin-x64',
+              'linux-x64-glibc': '@yuzu-octopus/mcp-pool-linux-x64',
+              'linux-x64-musl': '@yuzu-octopus/mcp-pool-linux-x64-musl',
+              'linux-arm64-glibc': '@yuzu-octopus/mcp-pool-linux-arm64',
+              'win32-x64-glibc': '@yuzu-octopus/mcp-pool-win32-x64',
+              'win32-arm64-glibc': '@yuzu-octopus/mcp-pool-win32-arm64',
+            };
+            for (const [k, pkg] of Object.entries(expect)) {
+              if (m.TABLE[k]?.[0] !== pkg) throw new Error('table miss: ' + k);
+            }
+            for (const k of ['sunos-sparc-glibc', 'linux-arm64-musl', 'freebsd-x64-glibc']) {
+              if (m.TABLE[k] !== undefined) throw new Error('expected table miss: ' + k);
+            }
+            if (m.platformKey() !== 'linux-x64-glibc') throw new Error('live key: ' + m.platformKey());
+            if (m.isMusl() !== false) throw new Error('glibc runner detected as musl');
+            console.log('TABLE-OK');
+          });"
+      - name: musl probe (alpine container)
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE/bin:/shim:ro" node:22-alpine node -e "
+          import('/shim/mcp-pool.js').then((m) => {
+            if (!m.isMusl()) { console.error('musl not detected'); process.exit(1); }
+            if (m.platformKey() !== 'linux-x64-musl') { console.error('key: ' + m.platformKey()); process.exit(2); }
+            console.log('MUSL-OK');
+          });"
 
   generate-project-page:
     needs: verify

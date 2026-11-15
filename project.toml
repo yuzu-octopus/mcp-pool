@@ -79,7 +79,7 @@ EOF
 
 # Run it
 bunx mcp-pool
-# Install builds a compiled binary via postinstall; invocation is unchanged.
+# Install fetches a prebuilt platform binary via optionalDependencies (override: MCP_POOL_BINARY; rebuild: mcp-pool --rebuild); without one it runs node dist/index.js (same flags, slower cold start).
 """
 
 [[sections]]

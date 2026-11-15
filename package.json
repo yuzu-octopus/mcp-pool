@@ -13,6 +13,15 @@
 		"!src/*.test.ts",
 		"README.md"
 	],
+	"optionalDependencies": {
+		"@yuzu-octopus/mcp-pool-darwin-arm64": "0.4.0",
+		"@yuzu-octopus/mcp-pool-darwin-x64": "0.4.0",
+		"@yuzu-octopus/mcp-pool-linux-arm64": "0.4.0",
+		"@yuzu-octopus/mcp-pool-linux-x64": "0.4.0",
+		"@yuzu-octopus/mcp-pool-linux-x64-musl": "0.4.0",
+		"@yuzu-octopus/mcp-pool-win32-arm64": "0.4.0",
+		"@yuzu-octopus/mcp-pool-win32-x64": "0.4.0"
+	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.6.0",
 		"citty": "^0.2.2",
@@ -28,7 +37,6 @@
 		"build": "rm -rf dist && tsc",
 		"typecheck": "tsc --project tsconfig.typecheck.json",
 		"prepare": "[ -d dist ] || bun run build",
-		"postinstall": "command -v bun >/dev/null 2>&1 || exit 0; [ -f src/index.ts ] || exit 0; bun build --compile src/index.ts --outfile ./mcp-pool-bin --minify || exit 0",
 		"start": "node dist/index.js",
 		"dev": "bun --watch src/index.ts",
 		"test": "bun test src/ test/startup-cleanup.test.ts test/daemon-sharing.test.ts test/http-concurrency.test.ts",

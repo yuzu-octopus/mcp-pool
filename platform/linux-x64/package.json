@@ -1,0 +1,17 @@
+{
+	"cpu": [
+		"x64"
+	],
+	"files": [
+		"bin/"
+	],
+	"libc": [
+		"glibc"
+	],
+	"license": "MIT",
+	"name": "@yuzu-octopus/mcp-pool-linux-x64",
+	"os": [
+		"linux"
+	],
+	"version": "0.4.0"
+}
