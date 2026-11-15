@@ -8,8 +8,8 @@ mcp-pool is itself an MCP server. You configure one or more "pools" — each poo
 
 - **1 subprocess per pool at a time**, not per key. No warm standby processes.
 - On rate-limit or transport error, the current upstream is closed and a new one spawns with the next key (~1-2s failover).
-- Tools are exposed with `{poolName}__` prefix to avoid name collisions.
-- See [Sharing](#sharing) for how several agents share one set of upstreams.
+- Tools, prompts, resources, and completions are exposed with `{poolName}__` prefix to avoid name collisions (resource URIs stay verbatim; `logging/setLevel` applies to every connected upstream).
+- `mcp-pool --help` prints modes and options. See [Sharing](#sharing) for how several agents share one set of upstreams.
 
 ## Sharing
 

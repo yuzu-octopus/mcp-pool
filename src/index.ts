@@ -5,6 +5,7 @@ import { createServer, type Server as NetServer } from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import packageJson from "../package.json" with { type: "json" };
 import type { LoadedConfig } from "./config.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { replyJsonError } from "./http-error.js";
@@ -31,7 +32,26 @@ interface Options {
 	port: number;
 	host: string;
 	socket?: string;
+	help: boolean;
 }
+
+const USAGE = `mcp-pool — MCP Key Pool Proxy (v${packageJson.version})
+
+Usage: mcp-pool [--config <path>] [--verbose] [--local | --http | --daemon]
+
+Modes (default: shared-daemon proxy over stdio):
+  (default)        Connect stdio to the shared daemon for this config (spawns it if needed)
+  --local          Standalone single-process server, no sharing
+  --http           Streamable HTTP endpoint at http://<host>:<port>/mcp (GET /health)
+  --daemon         Internal: run as the shared daemon (requires --socket)
+
+Options:
+  --config <path>  Config file (default search: ./mcp-pool.yaml, ./.mcp-pool.yaml, ~/.config/mcp-pool/mcp-pool.yaml)
+  --socket <path>  Daemon socket (with --daemon)
+  --port <n>       HTTP port (default: 3000, with --http)
+  --host <h>       HTTP host (default: 127.0.0.1, with --http)
+  --verbose        Per-request trace logs (JSON lines on stderr)
+  --help, -h       Show this help`;
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_HOST = "127.0.0.1";
@@ -45,6 +65,7 @@ function parseArgs(): Options {
 		http: false,
 		port: DEFAULT_PORT,
 		host: DEFAULT_HOST,
+		help: false,
 	};
 
 	for (let i = 0; i < argv.length; i++) {
@@ -57,6 +78,7 @@ function parseArgs(): Options {
 		else if (arg === "--daemon") options.daemon = true;
 		else if (arg === "--local") options.local = true;
 		else if (arg === "--http") options.http = true;
+		else if (arg === "--help" || arg === "-h") options.help = true;
 		else throw new Error(`unknown argument: ${arg}`);
 	}
 
@@ -369,6 +391,11 @@ async function runNodeHttp(
 
 async function main(): Promise<void> {
 	const options = parseArgs();
+
+	if (options.help) {
+		console.log(USAGE);
+		return;
+	}
 
 	if (options.daemon) {
 		if (!options.socket) throw new Error("--daemon requires --socket");

@@ -47,7 +47,8 @@ Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned
 - **proxy (default)**: agent's stdio session. Connects to the shared daemon; spawns one if the socket is missing or stale. Pure byte pipe, no MCP logic.
 - **`--daemon`**: detached process owning upstreams, one MCP `Server` per accepted connection. Exits when the last connection leaves, after `IDLE_GRACE_MS` (3s). `EADDRINUSE` means another daemon won the race — exits quietly.
 - **`--local`**: standalone single-process server, no sharing.
-- **`--http --port N [--host H]`**: stateless Streamable HTTP endpoint at `/mcp`, plus `GET /health`.
+- **`--http --port N [--host H]`**: per-request Server+transport over Streamable HTTP at `/mcp`, plus `GET /health`. Bun.serve when available, node:http fallback (`MCP_POOL_HTTP_NODE=1` forces node).
+- **`--help` / `-h`**: print usage and exit 0, no config needed.
 
 Runtime sockets live in `~/.mcp-pool/<sha256(configPath)[:16]>.sock`. **Not** `os.tmpdir()`: the SDK's stdio transport filters `TMPDIR` out of the child environment, which would give the daemon a different directory than the agent that spawned it. A `.status` file carries `ready` or the daemon's startup error so proxies fail fast.
 

@@ -51,7 +51,17 @@ async function main() {
 			`tool call returned error: ${JSON.stringify(callResult.content)}`,
 		);
 	}
-
+	// --help must print usage and exit 0 without needing a config.
+	const helpProc = Bun.spawnSync({
+		cmd: ["bun", "run", "src/index.ts", "--help"],
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const helpText = helpProc.stdout.toString();
+	if (helpProc.exitCode !== 0 || !helpText.includes("Usage: mcp-pool")) {
+		throw new Error(`--help failed: exit=${helpProc.exitCode}`);
+	}
+	console.error("smoke: --help OK");
 	console.error("smoke: PASSED");
 	await client.close();
 	process.exit(0);
