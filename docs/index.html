@@ -1065,8 +1065,8 @@
         </div>
         
         <div class="card">
-          <h3>Stdio Transport</h3>
-          <p>All upstream MCP servers communicate via stdio subprocesses. No HTTP endpoints to manage.</p>
+          <h3>Transports</h3>
+          <p>Stdio subprocesses by default, with remote http/sse upstreams supported per pool via url + headers.</p>
         </div>
         
       </div>
@@ -1083,11 +1083,9 @@
 
       
       
-      <pre><code class="language-bash"># Install globally
-npm install -g mcp-pool
-
+      <pre><code class="language-bash"># No install needed — run directly
 # Create a config
-cat &gt; ~/.config/mcp-pool/mcp-pool.yaml &lt;&lt; &#39;EOF&#39;
+cat &gt; mcp-pool.yaml &lt;&lt; &#39;EOF&#39;
 pools:
   brave-search:
     command: bunx
@@ -1102,7 +1100,7 @@ EOF
 
 # Run it
 bunx mcp-pool
-# Install builds a compiled binary via postinstall; invocation is unchanged.
+# Run fetches a prebuilt platform binary via optionalDependencies (override: MCP_POOL_BINARY; rebuild: mcp-pool --rebuild); without one it runs node dist/index.js (same flags, slower cold start).
 </code></pre>
       
 
@@ -1119,7 +1117,7 @@ bunx mcp-pool
       
       <ul class="steps">
         
-        <li><strong>1. Configure</strong> &mdash; Define pools in `mcp-pool.yaml`. Each pool = one MCP server type with N API keys. Config is auto-discovered from `./mcp-pool.yaml`, `./.mcp-pool.yaml`, or `~/.config/mcp-pool/mcp-pool.yaml`.</li>
+        <li><strong>1. Configure</strong> &mdash; Define pools in `mcp-pool.yaml`. Each pool = one MCP server type with N API keys. Config is auto-discovered from `./mcp-pool.yaml`, `./mcp-pool.yml`, `./.mcp-pool.yaml`, `./.mcp-pool.yml`, or the global user-config `mcp-pool.yaml`/`mcp-pool.yml`.</li>
         
         <li><strong>2. Start</strong> &mdash; mcp-pool tries each key in order until one connects. Only one upstream subprocess runs at a time per pool.</li>
         
@@ -1147,15 +1145,27 @@ bunx mcp-pool
         </thead>
         <tbody>
           
-          <tr><td>command</td><td>Yes</td><td>Executable to spawn (e.g. npx, bunx)</td></tr>
+          <tr><td>command</td><td>Yes (stdio only)</td><td>Executable to spawn (e.g. npx, bunx)</td></tr>
           
-          <tr><td>args</td><td>Yes</td><td>CLI arguments</td></tr>
+          <tr><td>args</td><td>No (stdio only)</td><td>CLI arguments</td></tr>
           
           <tr><td>keys</td><td>Yes</td><td>Array of env-var objects, at least 1</td></tr>
           
           <tr><td>rateLimitPatterns</td><td>Yes</td><td>Regex patterns matched against error text</td></tr>
           
           <tr><td>cooldownSeconds</td><td>No</td><td>Seconds a rate-limited key is skipped; defaults to 300</td></tr>
+          
+          <tr><td>transport</td><td>No</td><td>stdio (default), http, or sse for remote upstreams</td></tr>
+          
+          <tr><td>url</td><td>Yes (http/sse)</td><td>Upstream URL</td></tr>
+          
+          <tr><td>headers</td><td>No (http/sse)</td><td>Extra HTTP headers merged under each per-key entry</td></tr>
+          
+          <tr><td>env</td><td>No (stdio only)</td><td>Extra environment variables for the upstream process</td></tr>
+          
+          <tr><td>cwd</td><td>No (stdio only)</td><td>Working directory for the upstream process</td></tr>
+          
+          <tr><td>transientRetry</td><td>No</td><td>Opt-in same-key retries for listed tools whose error text matches</td></tr>
           
         </tbody>
       </table>
