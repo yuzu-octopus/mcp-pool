@@ -223,6 +223,88 @@ for (const mode of ["bun", "node"] as const) {
 	);
 }
 
+// Large payloads must round-trip intact through the streaming /mcp path:
+// runBunHttp hands the upstream body to the response without buffering it,
+// so a multi-MB tool result exercises delivery-after-handoff plus the
+// close-after-handoff hook. Same assertion on node:http for parity.
+for (const mode of ["bun", "node"] as const) {
+	test(
+		`large tool result round-trips intact (${mode})`,
+		async () => {
+			const directory = mkdtempSync(join(tmpdir(), `mcp-pool-http-big-${mode}-`));
+			const configFile = join(directory, "config.yaml");
+			let child: ChildProcess | undefined;
+
+			writeFileSync(
+				configFile,
+				`pools:
+  alpha:
+    command: bun
+    args: ["run", "test/helper-server.ts"]
+    keys:
+      - { TEST_TOOLS_JSON: '${toolsJson("alpha_tool")}' }
+    rateLimitPatterns: ["rate_limit_exceeded"]
+`,
+			);
+
+			try {
+				const basePort =
+					18200 + (process.pid % 1000) + (mode === "node" ? 10 : 0);
+				let port = -1;
+				for (const candidate of [basePort, basePort + 1]) {
+					child = spawn(
+						"bun",
+						[
+							"run",
+							"src/index.ts",
+							"--http",
+							"--port",
+							String(candidate),
+							"--config",
+							configFile,
+						],
+						{
+							cwd: ROOT,
+							stdio: ["ignore", "pipe", "pipe"],
+							env: {
+								...process.env,
+								...(mode === "node" ? { MCP_POOL_HTTP_NODE: "1" } : {}),
+							},
+						},
+					);
+					child.stderr?.resume();
+					if (await waitForHealth(candidate)) {
+						port = candidate;
+						break;
+					}
+					await stopChild(child);
+					child = undefined;
+				}
+				expect(port).not.toBe(-1);
+
+				const blob = `blob-${"x".repeat(2 * 1024 * 1024)}`;
+				const { status, rpc } = await postMcp(port, {
+					jsonrpc: "2.0",
+					id: 999,
+					method: "tools/call",
+					params: {
+						name: "alpha__alpha_tool",
+						arguments: { marker: "big", blob },
+					},
+				});
+				expect(status).toBe(200);
+				expect(rpc.id).toBe(999);
+				const text = rpc.result?.content?.[0]?.text ?? "";
+				expect(JSON.parse(text)).toEqual({ marker: "big", blob });
+			} finally {
+				if (child) await stopChild(child);
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+		TEST_TIMEOUT_MS,
+	);
+}
+
 test("replyJsonError destroys instead of writing when headers already sent", () => {
 	const calls: string[] = [];
 	const sent = {

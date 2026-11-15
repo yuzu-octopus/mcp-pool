@@ -370,12 +370,34 @@ async function runBunHttp(
 				try {
 					await mcp.connect(transport);
 					const upstreamRes = await transport.handleRequest(req);
-					// Buffer the body before closing: close() tears down the
-					// transport's SSE streams, so the Response must own its
-					// bytes first.
-					const body = await upstreamRes.text();
-					await mcp.close().catch(() => {});
-					return new Response(body, {
+					// Stream the body through instead of buffering it: TTFB no
+					// longer waits for the full upstream payload and peak memory
+					// stays flat on large responses. close() tears down the
+					// transport's SSE streams, so it must run only after the body
+					// is fully delivered (or the client goes away) — the
+					// TransformStream hooks mark exactly that point.
+					let closed = false;
+					const finish = () => {
+						if (closed) return;
+						closed = true;
+						mcp.close().catch(() => {});
+					};
+					if (!upstreamRes.body) {
+						finish();
+						return new Response(null, {
+							status: upstreamRes.status,
+							headers: upstreamRes.headers,
+						});
+					}
+					const passthrough = new TransformStream({
+						flush: () => {
+							finish();
+						},
+						cancel: () => {
+							finish();
+						},
+					});
+					return new Response(upstreamRes.body.pipeThrough(passthrough), {
 						status: upstreamRes.status,
 						headers: upstreamRes.headers,
 					});
