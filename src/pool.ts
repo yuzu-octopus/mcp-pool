@@ -97,6 +97,7 @@ export class Pool {
 	// Per-key merged static headers ({...config.headers, ...keyEntry}) for the
 	// http/sse transports. Only dynamic per-request headers merge per call.
 	private readonly keyHeaders: Record<string, string>[];
+	private readonly secretValues: string[];
 	// Catalog hashes cached at first fetch. Failover compares hashes instead
 	// of re-serializing every schema; the hash comparison IS the mismatch
 	// gate (a detailed diff runs only to build the error message).
@@ -107,6 +108,12 @@ export class Pool {
 	// Bumped on every list_changed notification; server.ts memoizes prefixed
 	// lists against it.
 	private listRevisionValue = 0;
+	private listDirty: Record<ListChangedKind, boolean> = {
+		tools: false,
+		prompts: false,
+		resources: false,
+	};
+	private listRefreshInFlight: Promise<void> | null = null;
 	// Fast-path flag for withSwap: true while no swap section is running or
 	// queued. Flipped synchronously, so exactly one contender sees idle.
 	private routeLockIdle = true;
@@ -128,6 +135,16 @@ export class Pool {
 			...config.headers,
 			...keyEntry,
 		}));
+		const secrets = new Set<string>();
+		for (const keyEntry of config.keys) {
+			for (const value of Object.values(keyEntry)) secrets.add(value);
+		}
+		if (config.env) {
+			for (const value of Object.values(config.env)) secrets.add(value);
+		}
+		this.secretValues = [...secrets]
+			.filter((s) => s.length >= 4)
+			.sort((a, b) => b.length - a.length);
 	}
 
 	async start(): Promise<void> {
@@ -142,7 +159,7 @@ export class Pool {
 					event: "upstream_error",
 					pool: this.name,
 					upstream: this.cursor,
-					error: err instanceof Error ? err.message : String(err),
+					error: this.redactSecrets(err instanceof Error ? err.message : String(err)),
 				});
 				this.cursor = (this.cursor + 1) % maxKeys;
 				if (attempt === maxKeys - 1) {
@@ -449,7 +466,7 @@ export class Pool {
 					event: "upstream_error",
 					pool: this.name,
 					upstream: this.cursor,
-					error: err instanceof Error ? err.message : String(err),
+					error: this.redactSecrets(err instanceof Error ? err.message : String(err)),
 				});
 				this.cursor = (this.cursor + 1) % maxKeys;
 				return { kind: "skip" };
@@ -495,7 +512,7 @@ export class Pool {
 			event: "upstream_error",
 			pool: this.name,
 			upstream: prepared.keyIndex,
-			error: err instanceof Error ? err.message : String(err),
+			error: this.redactSecrets(err instanceof Error ? err.message : String(err)),
 		});
 		if (this.client === prepared.client) {
 			await this.closeCurrent();
@@ -527,7 +544,7 @@ export class Pool {
 				content: [
 					{
 						type: "text" as const,
-						text: `All ${maxKeys} keys for '${this.name}' failed: ${lastError}`,
+						text: this.redactSecrets(`All ${maxKeys} keys for '${this.name}' failed: ${lastError}`),
 					},
 				],
 				isError: true,
@@ -567,15 +584,129 @@ export class Pool {
 		return this.listChangedListeners.size;
 	}
 
-	/** Test seam: simulate an upstream list_changed notification. */
-	debugFireListChanged(kind: ListChangedKind): void {
-		this.fireListChanged(kind);
+	debugFireListChanged(kind: ListChangedKind): Promise<void> {
+		return this.handleListChanged(kind);
 	}
 
 	private fireListChanged(kind: ListChangedKind): void {
-		this.listRevisionValue++;
+		void this.handleListChanged(kind).catch(() => {});
+	}
+
+	private async handleListChanged(kind: ListChangedKind): Promise<void> {
+		this.listDirty[kind] = true;
+		await this.refreshDirtyKinds();
+	}
+
+	private hasDirtyKinds(): boolean {
+		return (
+			this.listDirty.tools ||
+			this.listDirty.prompts ||
+			this.listDirty.resources
+		);
+	}
+
+	private refreshDirtyKinds(): Promise<void> {
+		if (this.listRefreshInFlight) return this.listRefreshInFlight;
+		const pending = this.runRefreshLoop().finally(() => {
+			if (this.listRefreshInFlight === pending) this.listRefreshInFlight = null;
+		});
+		this.listRefreshInFlight = pending;
+		return pending;
+	}
+
+	private async runRefreshLoop(): Promise<void> {
+		for (;;) {
+			const kinds = this.takeDirtyKinds();
+			if (kinds === null) return;
+			try {
+				if (!(await this.refreshKinds(kinds))) {
+					this.restoreDirtyKinds(kinds);
+					return;
+				}
+			} catch (err) {
+				this.restoreDirtyKinds(kinds);
+				log({
+					level: "error",
+					event: "upstream_error",
+					pool: this.name,
+					upstream: this.cursor,
+					error: this.redactSecrets(
+						err instanceof Error ? err.message : String(err),
+					),
+				});
+				return;
+			}
+		}
+	}
+
+	private takeDirtyKinds(): Set<ListChangedKind> | null {
+		const kinds = new Set<ListChangedKind>();
+		if (this.listDirty.tools) kinds.add("tools");
+		if (this.listDirty.prompts) kinds.add("prompts");
+		if (this.listDirty.resources) kinds.add("resources");
+		if (kinds.size === 0) return null;
+		this.listDirty.tools = false;
+		this.listDirty.prompts = false;
+		this.listDirty.resources = false;
+		return kinds;
+	}
+
+	private restoreDirtyKinds(kinds: Set<ListChangedKind>): void {
+		for (const kind of kinds) this.listDirty[kind] = true;
+	}
+
+	private async refreshKinds(kinds: Set<ListChangedKind>): Promise<boolean> {
+		const snapshot = await this.withSwap(() => ({
+			client: this.client,
+			caps: this.upstreamCapabilities,
+		}));
+		if (!snapshot.client) return false;
+		const client = snapshot.client;
+		const caps = snapshot.caps;
+		const wantTools = kinds.has("tools");
+		const wantPrompts = kinds.has("prompts");
+		const wantResources = kinds.has("resources");
+		const [toolRes, promptRes, resRes, tmplRes] = await Promise.all([
+			wantTools ? client.listTools() : null,
+			wantPrompts && caps?.prompts ? client.listPrompts().catch(() => null) : null,
+			wantResources && caps?.resources ? client.listResources().catch(() => null) : null,
+			wantResources && caps?.resources
+				? client.listResourceTemplates().catch(() => null)
+				: null,
+		]);
+		await this.withSwap(() => {
+			if (wantTools && toolRes) {
+				const tools = (toolRes.tools ?? []) as Tool[];
+				this.cachedTools = tools;
+				this.toolCatalogHash = hashToolCatalog(tools);
+			}
+			if (wantPrompts && promptRes) {
+				const prompts = (promptRes.prompts ?? []) as Prompt[];
+				this.cachedPrompts = prompts;
+				this.promptCatalogHash = hashPromptCatalog(prompts);
+			}
+			if (wantResources && resRes) {
+				this.cachedResources = (resRes.resources ?? []) as Resource[];
+			}
+			if (wantResources && tmplRes) {
+				const templates = (tmplRes.resourceTemplates ??
+					[]) as ResourceTemplate[];
+				this.cachedTemplates = templates;
+				this.templateMatchers = templates.map((t) =>
+					templateToRegExp(t.uriTemplate),
+				);
+			}
+			this.listRevisionValue++;
+		});
 		for (const listener of this.listChangedListeners) {
-			listener(kind);
+			for (const kind of kinds) listener(kind);
+		}
+		return true;
+	}
+
+	private maybeRefreshDirty(kind: ListChangedKind): void {
+		if (this.listDirty[kind] && this.client && !this.listRefreshInFlight) {
+			void this.refreshDirtyKinds().catch(() => {});
 		}
 	}
 
@@ -597,7 +728,7 @@ export class Pool {
 				content: [
 					{
 						type: "text" as const,
-						text: `All ${maxKeys} keys for '${this.name}' failed to connect or are unavailable.`,
+						text: this.redactSecrets(`All ${maxKeys} keys for '${this.name}' failed to connect or are unavailable.`),
 					},
 				],
 				isError: true,
@@ -609,7 +740,7 @@ export class Pool {
 			content: [
 				{
 					type: "text" as const,
-					text: `All ${maxKeys} keys for '${this.name}' are cooling down after upstream errors (rate limit, quota, or authentication). Retry after ${retryAfter}s.`,
+						text: this.redactSecrets(`All ${maxKeys} keys for '${this.name}' are cooling down after upstream errors (rate limit, quota, or authentication). Retry after ${retryAfter}s.`),
 				},
 			],
 			isError: true,
@@ -617,18 +748,22 @@ export class Pool {
 	}
 
 	getTools(): Tool[] {
+		this.maybeRefreshDirty("tools");
 		return this.cachedTools;
 	}
 
 	getPrompts(): Prompt[] {
+		this.maybeRefreshDirty("prompts");
 		return this.cachedPrompts;
 	}
 
 	getResources(): Resource[] {
+		this.maybeRefreshDirty("resources");
 		return this.cachedResources;
 	}
 
 	getResourceTemplates(): ResourceTemplate[] {
+		this.maybeRefreshDirty("resources");
 		return this.cachedTemplates;
 	}
 
@@ -657,6 +792,14 @@ export class Pool {
 
 	private matchesRateLimit(text: string): boolean {
 		return this.rateLimitRes.some((re) => re.test(text));
+	}
+
+	private redactSecrets(text: string): string {
+		let out = text;
+		for (const secret of this.secretValues) {
+			if (out.includes(secret)) out = out.split(secret).join("[redacted]");
+		}
+		return out;
 	}
 
 	private createTransport(keyIndex: number): Transport {
@@ -794,9 +937,9 @@ export class Pool {
 		if (this.cachedTools.length > 0) {
 			if (toolHash !== this.toolCatalogHash) {
 				const mismatch = findToolMismatch(this.cachedTools, tools);
-				await client.close();
+				await client.close().catch(() => {});
 				throw new Error(
-					`Pool "${this.name}" key ${keyIndex} tools mismatch: ${mismatch ?? "catalog changed"}`,
+					this.redactSecrets(`Pool "${this.name}" key ${keyIndex} tools mismatch: ${mismatch ?? "catalog changed"}`),
 				);
 			}
 		} else {
@@ -808,9 +951,9 @@ export class Pool {
 		if (this.cachedPrompts.length > 0) {
 			if (promptHash !== this.promptCatalogHash) {
 				const mismatch = findPromptMismatch(this.cachedPrompts, prompts);
-				await client.close();
+				await client.close().catch(() => {});
 				throw new Error(
-					`Pool "${this.name}" key ${keyIndex} prompts mismatch: ${mismatch ?? "catalog changed"}`,
+					this.redactSecrets(`Pool "${this.name}" key ${keyIndex} prompts mismatch: ${mismatch ?? "catalog changed"}`),
 				);
 			}
 		} else {
@@ -821,9 +964,9 @@ export class Pool {
 		if (this.cachedResources.length > 0) {
 			const mismatch = findResourceMismatch(this.cachedResources, resources);
 			if (mismatch) {
-				await client.close();
+				await client.close().catch(() => {});
 				throw new Error(
-					`Pool "${this.name}" key ${keyIndex} resources mismatch: ${mismatch}`,
+					this.redactSecrets(`Pool "${this.name}" key ${keyIndex} resources mismatch: ${mismatch}`),
 				);
 			}
 		} else {
@@ -833,9 +976,9 @@ export class Pool {
 		if (this.cachedTemplates.length > 0) {
 			const mismatch = findTemplateMismatch(this.cachedTemplates, templates);
 			if (mismatch) {
-				await client.close();
+				await client.close().catch(() => {});
 				throw new Error(
-					`Pool "${this.name}" key ${keyIndex} resource templates mismatch: ${mismatch}`,
+					this.redactSecrets(`Pool "${this.name}" key ${keyIndex} resource templates mismatch: ${mismatch}`),
 				);
 			}
 		} else {
