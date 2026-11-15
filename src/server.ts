@@ -165,7 +165,7 @@ type PoolSetState = {
 const poolSetShared = new WeakMap<
 	Pool[],
 	{ state: PoolSetState; handlers: PoolSetHandlers }
->;
+>();
 
 function getShared(
 	pools: Pool[],
@@ -193,24 +193,25 @@ function getShared(
 /** Memoized prefixed lists + uri map; rebuilt when any pool rev changes. */
 function ensureFreshLists(state: PoolSetState): FreshLists {
 	const revs = state.pools.map((pool) => pool.listChangedRevision());
-	let { lists } = state;
+	const cached = state.lists;
 	if (
-		!lists ||
-		revs.length !== lists.revs.length ||
-		revs.some((rev, i) => rev !== lists.revs[i])
+		cached &&
+		revs.length === cached.revs.length &&
+		revs.every((rev, i) => rev === cached.revs[i])
 	) {
-		const uriToPool = new Map<string, Pool>();
-		seedUriMap(uriToPool, state.pools);
-		lists = {
-			revs,
-			tools: buildPrefixedTools(state.pools),
-			prompts: buildPrefixedPrompts(state.pools),
-			resources: buildPrefixedResources(state.pools),
-			templates: buildPrefixedTemplates(state.pools),
-			uriToPool,
-		};
-		state.lists = lists;
+		return cached;
 	}
+	const uriToPool = new Map<string, Pool>();
+	seedUriMap(uriToPool, state.pools);
+	const lists: CachedLists = {
+		revs,
+		tools: buildPrefixedTools(state.pools),
+		prompts: buildPrefixedPrompts(state.pools),
+		resources: buildPrefixedResources(state.pools),
+		templates: buildPrefixedTemplates(state.pools),
+		uriToPool,
+	};
+	state.lists = lists;
 	return lists;
 }
 
@@ -266,9 +267,7 @@ function buildPrefixedResources(pools: Pool[]): PrefixedResource[] {
 	return resources;
 }
 
-function buildPrefixedTemplates(
-	pools: Pool[],
-): PrefixedResourceTemplate[] {
+function buildPrefixedTemplates(pools: Pool[]): PrefixedResourceTemplate[] {
 	const templates: PrefixedResourceTemplate[] = [];
 	for (const pool of pools) {
 		const prefix = `${pool.name}__`;
@@ -321,7 +320,10 @@ function createPoolSetHandlers(state: PoolSetState) {
 			if (!pool) {
 				return {
 					content: [
-						{ type: "text" as const, text: `Unknown pool: "${split.poolName}"` },
+						{
+							type: "text" as const,
+							text: `Unknown pool: "${split.poolName}"`,
+						},
 					],
 					isError: true,
 				};
@@ -500,9 +502,7 @@ function createPoolSetHandlers(state: PoolSetState) {
 				return result;
 			}
 			const { uriToPool } = ensureFreshLists(state);
-			pool =
-				uriToPool.get(ref.uri) ??
-				findTemplatePool(state.pools, ref.uri);
+			pool = uriToPool.get(ref.uri) ?? findTemplatePool(state.pools, ref.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${ref.uri}"`);
 			}

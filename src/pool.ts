@@ -648,9 +648,7 @@ export class Pool {
 	 */
 	resolveTemplateForUri(uri: string): Pool | undefined {
 		if (this.templateMatchers.length === 0) return undefined;
-		return this.templateMatchers.some((re) => re.test(uri))
-			? this
-			: undefined;
+		return this.templateMatchers.some((re) => re.test(uri)) ? this : undefined;
 	}
 
 	async close(): Promise<void> {
@@ -992,10 +990,7 @@ function stringifyContent(content: unknown): string {
 function hashToolCatalog(tools: Tool[]): string {
 	return JSON.stringify(
 		tools
-			.map(
-				(t) =>
-					[t.name, t.inputSchema] as [string, Tool["inputSchema"]],
-			)
+			.map((t) => [t.name, t.inputSchema] as [string, Tool["inputSchema"]])
 			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
 	);
 }
