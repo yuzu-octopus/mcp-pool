@@ -92,8 +92,8 @@ describe("resources passthrough", () => {
 			const result = await client.listResources();
 			const byName: Record<string, string> = {};
 			for (const r of result.resources) byName[r.name] = r.uri;
-			expect(byName["alpha__doc"]).toBe("exa://doc-1");
-			expect(byName["beta__item"]).toBe("fire://item-9");
+			expect(byName.alpha__doc).toBe("exa://doc-1");
+			expect(byName.beta__item).toBe("fire://item-9");
 		} finally {
 			await closeAll([alpha, beta], client, server);
 		}
@@ -222,6 +222,50 @@ describe("resources passthrough", () => {
 		assertErrorResult(result);
 		expect(result.isError).toBe(true);
 		expect(pool.getResources().map((r) => r.uri)).toEqual(["exa://doc-1"]);
+		await pool.close();
+	});
+
+	test("template cache mismatch on mimeType drift surfaces error", async () => {
+		const PLAIN = [{ uri: "exa://doc-1", name: "doc", mimeType: "text/plain" }];
+		const HTML = [{ uri: "exa://doc-1", name: "doc", mimeType: "text/html" }];
+		const pool = new Pool("test", {
+			command: "bun",
+			args: ["run", "test/helper-server.ts"],
+			keys: [
+				{ KEY: "a", TEST_RESOURCES_JSON: JSON.stringify(PLAIN) },
+				{ KEY: "b", TEST_RESOURCES_JSON: JSON.stringify(HTML) },
+			],
+			rateLimitPatterns: ["rate_limit_exceeded"],
+		});
+		await pool.start();
+		expect(pool.getResourceTemplates().map((t) => t.mimeType)).toEqual([
+			"text/plain",
+		]);
+		const result = await pool.routeRead("exa://unknown");
+		assertErrorResult(result);
+		expect(result.isError).toBe(true);
+		expect(pool.getResourceTemplates().map((t) => t.mimeType)).toEqual([
+			"text/plain",
+		]);
+		await pool.close();
+	});
+
+	test("complete fails over to healthy key when first key crashes", async () => {
+		const pool = new Pool("test", {
+			command: "bun",
+			args: ["run", "test/helper-server.ts"],
+			keys: [
+				{ KEY: "a", TEST_CRASH_ON_START: "1" },
+				{ KEY: "b", ...promptsEnv(SUMMARIZE) },
+			],
+			rateLimitPatterns: ["rate_limit_exceeded"],
+		});
+		await pool.start();
+		const result = await pool.routeComplete({
+			ref: { type: "ref/prompt", name: "summarize" },
+			argument: { name: "text", value: "hel" },
+		});
+		expect("isError" in result && result.isError).not.toBe(true);
 		await pool.close();
 	});
 });
@@ -467,6 +511,57 @@ describe("completion + logging + list_changed", () => {
 			expect(seen).toContain("tools-changed");
 		} finally {
 			await closeAll([alpha], client, server);
+		}
+	});
+});
+
+describe("session teardown + routing robustness (review findings)", () => {
+	test("server.close() unregisters all pool list_changed listeners", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", {}));
+		await alpha.start();
+		const before = alpha.listChangedListenerCount();
+		const { client, server } = await startClient([alpha]);
+		try {
+			expect(alpha.listChangedListenerCount()).toBeGreaterThan(before);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+		expect(alpha.listChangedListenerCount()).toBe(before);
+	});
+
+	test("resources/read falls back to live lookup when map not seeded", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		// NOTE: no list call first, so the per-build URI map is empty.
+		const { client, server } = await startClient([alpha]);
+		try {
+			const result = await client.readResource({ uri: "exa://doc-1" });
+			expect(JSON.stringify(result)).toContain("doc-1");
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("prompts/get routes to the pool that owns the prompt", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
+		const beta = new Pool("beta", poolConfig("beta", promptsEnv(TRANSLATE)));
+		await alpha.start();
+		await beta.start();
+		const { client, server } = await startClient([alpha, beta]);
+		try {
+			const a = await client.getPrompt({
+				name: "alpha__summarize",
+				arguments: { text: "hi" },
+			});
+			const b = await client.getPrompt({
+				name: "beta__translate",
+				arguments: { text: "hi" },
+			});
+			expect(JSON.stringify(a)).toContain("summarize");
+			expect(JSON.stringify(b)).toContain("translate");
+			expect(JSON.stringify(a)).not.toContain("translate");
+		} finally {
+			await closeAll([alpha, beta], client, server);
 		}
 	});
 });

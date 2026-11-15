@@ -171,6 +171,7 @@ if (offerResources) {
 			resourceTemplates: getResources().map((r) => ({
 				name: r.name,
 				uriTemplate: "exa://docs/{id}",
+				...(r.mimeType ? { mimeType: r.mimeType } : {}),
 			})),
 		};
 	});

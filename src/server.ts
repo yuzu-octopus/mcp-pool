@@ -61,11 +61,27 @@ function splitPrefix(
 function seedUriMap(uriToPool: Map<string, Pool>, pools: Pool[]): void {
 	for (const pool of pools) {
 		for (const resource of pool.getResources()) {
-			if (!uriToPool.has(resource.uri)) uriToPool.set(resource.uri, pool);
+			if (!uriToPool.has(resource.uri)) {
+				uriToPool.set(resource.uri, pool);
+			} else {
+				log({
+					level: "warn",
+					event: "resource_uri_collision",
+					pool: pool.name,
+					uri: resource.uri,
+				});
+			}
 		}
 		for (const template of pool.getResourceTemplates()) {
 			if (!uriToPool.has(template.uriTemplate)) {
 				uriToPool.set(template.uriTemplate, pool);
+			} else {
+				log({
+					level: "warn",
+					event: "resource_uri_collision",
+					pool: pool.name,
+					uri: template.uriTemplate,
+				});
 			}
 		}
 	}
@@ -297,7 +313,8 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 		});
 
 		server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-			const pool = uriToPool.get(request.params.uri);
+			const pool =
+				uriToPool.get(request.params.uri) ?? findUriPool(request.params.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
@@ -318,10 +335,19 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 		});
 
 		server.setRequestHandler(SubscribeRequestSchema, async (request) => {
-			const pool = uriToPool.get(request.params.uri);
+			const pool =
+				uriToPool.get(request.params.uri) ?? findUriPool(request.params.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
+
+			log({
+				level: "info",
+				event: "route_resource",
+				pool: pool.name,
+				uri: `subscribe:${request.params.uri}`,
+				upstream: -1,
+			});
 
 			const err = await pool.routeSubscribe(request.params.uri);
 			if (err) {
@@ -336,6 +362,14 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 			if (!pool) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
+
+			log({
+				level: "info",
+				event: "route_resource",
+				pool: pool.name,
+				uri: `unsubscribe:${request.params.uri}`,
+				upstream: -1,
+			});
 
 			const err = await pool.routeUnsubscribe(request.params.uri);
 			if (err) {

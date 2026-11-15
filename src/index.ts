@@ -101,12 +101,17 @@ async function runLocal(loaded: LoadedConfig, verbose: boolean): Promise<void> {
 	await server.connect(transport);
 
 	process.on("SIGINT", async () => {
+		await server.close().catch(() => {});
 		await Promise.allSettled(pools.map((p) => p.close()));
 		process.exit(0);
 	});
 	process.on("SIGTERM", async () => {
+		await server.close().catch(() => {});
 		await Promise.allSettled(pools.map((p) => p.close()));
 		process.exit(0);
+	});
+	process.stdin.on("end", () => {
+		void server.close().catch(() => {});
 	});
 }
 
@@ -166,6 +171,7 @@ async function runDaemon(
 		});
 
 		socket.on("close", () => {
+			void session.close().catch(() => {});
 			open--;
 			if (open > 0 || shuttingDown) return;
 
@@ -257,13 +263,22 @@ async function runBunHttp(
 			const url = new URL(req.url);
 			if (req.method === "POST" && url.pathname === "/mcp") {
 				server.timeout(req, 0);
+				const mcp = buildServer(pools, verbose);
+				const transport = new WebStandardStreamableHTTPServerTransport({
+					sessionIdGenerator: undefined,
+				});
 				try {
-					const mcp = buildServer(pools, verbose);
-					const transport = new WebStandardStreamableHTTPServerTransport({
-						sessionIdGenerator: undefined,
-					});
 					await mcp.connect(transport);
-					return transport.handleRequest(req);
+					const upstreamRes = await transport.handleRequest(req);
+					// Buffer the body before closing: close() tears down the
+					// transport's SSE streams, so the Response must own its
+					// bytes first.
+					const body = await upstreamRes.text();
+					await mcp.close().catch(() => {});
+					return new Response(body, {
+						status: upstreamRes.status,
+						headers: upstreamRes.headers,
+					});
 				} catch (err: unknown) {
 					return Response.json(
 						{
@@ -311,7 +326,13 @@ async function runNodeHttp(
 			});
 			void server
 				.connect(transport)
-				.then(() => transport.handleRequest(req, res))
+				.then(async () => {
+					try {
+						await transport.handleRequest(req, res);
+					} finally {
+						await server.close().catch(() => {});
+					}
+				})
 				.catch((err: unknown) => {
 					log({
 						level: "error",

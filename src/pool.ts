@@ -367,15 +367,34 @@ export class Pool {
 	async routeComplete(
 		params: CompleteRequest["params"],
 	): Promise<CompleteResult | RouteError> {
-		if (!this.started || !this.client) {
+		if (!this.started) {
 			return unavailableError(this.name, this.config.keys.length);
 		}
-		try {
-			const result = await this.client.complete(params);
-			return result as CompleteResult;
-		} catch {
-			return unavailableError(this.name, this.config.keys.length);
+		const maxKeys = this.config.keys.length;
+		let lastError: string | null = null;
+		for (let attempt = 0; attempt < maxKeys; attempt++) {
+			const prepared = await this.withSwap(() => this.prepareNext());
+			if (prepared.kind === "skip") continue;
+			try {
+				const result = await prepared.client.complete(params);
+				return result as CompleteResult;
+			} catch (err) {
+				lastError = err instanceof Error ? err.message : String(err);
+				await this.withSwap(() => this.markFailed(err));
+			}
 		}
+		if (lastError) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `All ${maxKeys} keys for '${this.name}' failed: ${lastError}`,
+					},
+				],
+				isError: true,
+			};
+		}
+		return unavailableError(this.name, this.config.keys.length);
 	}
 
 	async routeSetLevel(level: LoggingLevel): Promise<RouteError | null> {
@@ -402,6 +421,11 @@ export class Pool {
 		return () => {
 			this.listChangedListeners.delete(listener);
 		};
+	}
+
+	/** Count of active list_changed subscriptions (teardown invariant). */
+	listChangedListenerCount(): number {
+		return this.listChangedListeners.size;
 	}
 
 	/** Test seam: simulate an upstream list_changed notification. */
@@ -473,8 +497,9 @@ export class Pool {
 	}
 
 	/**
-	 * Per-pool URI→pool lookup. Slice 2 fills the map at list time; slice 3
-	 * moves resolution here so completion routing shares it.
+	 * Per-pool URI→pool lookup over cached resources and templates. Template
+	 * matching is exact-template-string only (a concrete resource URI never
+	 * matches a `.../{id}` template here; completion refs pass raw templates).
 	 */
 	resolvePoolForUri(uri: string): Pool | undefined {
 		return this.cachedResources.some((r) => r.uri === uri) ||
@@ -730,8 +755,8 @@ function findTemplateMismatch(
 		if (!tmplB) {
 			return `resource template "${uriTemplate}" missing from upstream`;
 		}
-		if (tmplA.name !== tmplB.name) {
-			return `resource template "${uriTemplate}" name mismatch`;
+		if (tmplA.name !== tmplB.name || tmplA.mimeType !== tmplB.mimeType) {
+			return `resource template "${uriTemplate}" metadata mismatch`;
 		}
 	}
 

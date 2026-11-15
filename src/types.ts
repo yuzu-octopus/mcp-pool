@@ -50,6 +50,12 @@ export type LogEvent =
 	  }
 	| {
 			level: "warn";
+			event: "resource_uri_collision";
+			pool: string;
+			uri: string;
+	  }
+	| {
+			level: "warn";
 			event: "rate_limited";
 			pool: string;
 			upstream: number;
