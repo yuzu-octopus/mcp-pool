@@ -542,6 +542,30 @@ describe("session teardown + routing robustness (review findings)", () => {
 		}
 	});
 
+	test("exact URI hits map; template-concrete URI falls back to owner (F10)", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		// Helper advertises uriTemplate "exa://docs/{id}".
+		expect(alpha.resolveTemplateForUri("exa://docs/123")).toBe(alpha);
+		expect(alpha.resolveTemplateForUri("exa://other/9")).toBeUndefined();
+		const { client, server } = await startClient([alpha]);
+		try {
+			// Exact URIs hit the uriToPool map: served verbatim upstream.
+			const exact = await client.readResource({ uri: "exa://doc-1" });
+			expect(JSON.stringify(exact)).toContain("hello from doc");
+			// Template-concrete URIs miss the map and fall back to the owning
+			// pool via template match; upstream then fails the read, which
+			// proves routing got past the "Unknown resource" gate.
+			const err = await client
+				.readResource({ uri: "exa://docs/123" })
+				.then((): null => null)
+				.catch((e: unknown) => e);
+			expect(String(err)).toMatch(/failed to connect or are unavailable/);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
 	test("prompts/get routes to the pool that owns the prompt", async () => {
 		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
 		const beta = new Pool("beta", poolConfig("beta", promptsEnv(TRANSLATE)));
@@ -710,6 +734,31 @@ describe("failover ownership (007-A)", () => {
 		expect(JSON.stringify(await pool.routeCall("search", {}))).toContain(
 			"quota",
 		);
+	});
+
+	test("swap sections never overlap under concurrent failovers", async () => {
+		const { pool } = failoverHarness(async () => budgetError);
+		await pool.start();
+		const st = pool as unknown as Record<string, (fn: () => unknown) => unknown>;
+		const origSwap = st["withSwap"].bind(pool);
+		let active = 0;
+		let maxActive = 0;
+		st["withSwap"] = async (fn: () => unknown) => {
+			const wrapped = async () => {
+				active++;
+				maxActive = Math.max(maxActive, active);
+				try {
+					return await fn();
+				} finally {
+					active--;
+				}
+			};
+			return origSwap(wrapped);
+		};
+		await Promise.all(
+			Array.from({ length: 6 }, () => pool.routeCall("search", {})),
+		);
+		expect(maxActive).toBe(1);
 	});
 });
 
