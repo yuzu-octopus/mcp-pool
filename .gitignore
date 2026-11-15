@@ -1,5 +1,6 @@
 node_modules/
 dist/
+/mcp-pool-bin
 *.log
 .env*
 !.env.example

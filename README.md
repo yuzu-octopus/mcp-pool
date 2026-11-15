@@ -74,6 +74,8 @@ Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so r
 
 Tool names are prefixed: `brave-search__brave_web_search`. The client calls the prefixed name; mcp-pool strips the prefix and routes to the correct upstream.
 
+Install builds a compiled binary via postinstall (`bun build --compile`); invocation is unchanged. With `--ignore-scripts`, the bin falls back to `node dist/index.js`.
+
 Pass `--verbose` for per-request trace logs.
 
 ## Logging
