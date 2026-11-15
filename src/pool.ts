@@ -26,20 +26,6 @@ import type { PoolConfig } from "./types.js";
 
 /** Upstream spawn/connect budget; a hung subprocess must not block startup. */
 export const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
-/** Per-tick Date.now() cache for cooldown comparisons: one clock sample is
- * shared by every check in the same tick instead of sampling per call. Reset
- * via microtask, so the next tick re-samples. Monotonic enough for cooldown
- * expiry; the warn-path toISOString below still uses a fresh Date. */
-let cachedTickNow = 0;
-function tickNow(): number {
-	if (cachedTickNow === 0) {
-		cachedTickNow = Date.now();
-		queueMicrotask(() => {
-			cachedTickNow = 0;
-		});
-	}
-	return cachedTickNow;
-}
 
 type CallResult = {
 	content: Array<{ type: "text"; text: string }>;
@@ -117,13 +103,6 @@ export class Pool {
 		resources: false,
 	};
 	private listRefreshInFlight: Promise<void> | null = null;
-	// Fast-path flag for withSwap: true while no swap section is running or
-	// queued. Flipped synchronously, so exactly one contender sees idle.
-	private routeLockIdle = true;
-	// Queued slow-path waiters. Keeps the flag down across handoffs: while a
-	// waiter is queued or running, new callers must queue behind it instead
-	// of barging in on the fast path.
-	private routeLockWaiters = 0;
 
 	constructor(name: string, config: PoolConfig) {
 		this.name = name;
@@ -319,7 +298,7 @@ export class Pool {
 	 * Runs one non-tool request on the current upstream. Transport failures
 	 * close it and fail over to the next key; an error the upstream itself
 	 * answers with is re-raised to the caller and the upstream stays up.
-	 * Unlike tool calls, these requests are never rate-limited.
+	 * Only tool calls match rateLimitPatterns and put keys on cooldown.
 	 */
 	private async route<T>(
 		op: (client: Client) => Promise<T>,
@@ -357,37 +336,15 @@ export class Pool {
 	 * in-flight callTool runs outside it.
 	 */
 	private async withSwap<T>(fn: () => T | Promise<T>): Promise<T> {
-		// Waiters guard the handoff: a releaser that wakes a queued caller
-		// must leave the flag down, otherwise an already-queued continuation
-		// positioned behind the releaser but ahead of the waiter would see
-		// idle and barge in on the fast path while the waiter also proceeds.
-		if (this.routeLockIdle && this.routeLockWaiters === 0) {
-			// Fast path: the lock is uncontended, so run inline without extra
-			// promise allocations or microtask hops. The flag flip is
-			// synchronous, so a concurrent caller can only take the queued
-			// path below; FIFO ordering is preserved through routeLock.
-			this.routeLockIdle = false;
-			const next = Promise.withResolvers<void>();
-			this.routeLock = next.promise;
-			try {
-				return await fn();
-			} finally {
-				if (this.routeLockWaiters === 0) this.routeLockIdle = true;
-				next.resolve();
-			}
-		}
-		this.routeLockWaiters++;
+		// FIFO promise chain: each section waits for the one queued before it.
 		const prev = this.routeLock;
-		const next = Promise.withResolvers<void>();
-		this.routeLock = next.promise;
+		const done = Promise.withResolvers<void>();
+		this.routeLock = done.promise;
+		await prev;
 		try {
-			await prev;
-			this.routeLockIdle = false;
 			return await fn();
 		} finally {
-			this.routeLockWaiters--;
-			if (this.routeLockWaiters === 0) this.routeLockIdle = true;
-			next.resolve();
+			done.resolve();
 		}
 	}
 
@@ -399,7 +356,7 @@ export class Pool {
 	private async prepareNext(): Promise<Prepared> {
 		const maxKeys = this.config.keys.length;
 
-		if (this.cooldowns[this.cursor] > tickNow()) {
+		if (this.cooldowns[this.cursor] > Date.now()) {
 			this.cursor = (this.cursor + 1) % maxKeys;
 			return { kind: "skip" };
 		}
@@ -437,7 +394,7 @@ export class Pool {
 		prepared: PreparedCall,
 	): Promise<void> {
 		const { keyIndex } = prepared;
-		this.cooldowns[keyIndex] = tickNow() + cooldownSec * 1000;
+		this.cooldowns[keyIndex] = Date.now() + cooldownSec * 1000;
 		log({
 			level: "warn",
 			event: "rate_limited",
@@ -608,7 +565,7 @@ export class Pool {
 
 	private exhaustedError(): CallResult {
 		const maxKeys = this.config.keys.length;
-		const now = tickNow();
+		const now = Date.now();
 		const active = this.cooldowns.filter((c) => c > now);
 
 		log({
