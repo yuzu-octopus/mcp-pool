@@ -26,7 +26,7 @@
 	"scripts": {
 		"build": "rm -rf dist && tsc",
 		"typecheck": "tsc --project tsconfig.typecheck.json",
-		"prepare": "bun run build",
+		"prepare": "[ -d dist ] || bun run build",
 		"postinstall": "command -v bun >/dev/null 2>&1 || exit 0; [ -f src/index.ts ] || exit 0; bun build --compile src/index.ts --outfile ./mcp-pool-bin --minify || exit 0",
 		"start": "node dist/index.js",
 		"dev": "bun --watch src/index.ts",
