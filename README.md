@@ -71,7 +71,7 @@ Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so r
   "mcpServers": {
     "mcp-pool": {
       "command": "bunx",
-      "args": ["mcp-pool@0.3.0", "--config", "/path/to/mcp-pool.yaml"]
+      "args": ["mcp-pool@0.4.0", "--config", "/path/to/mcp-pool.yaml"]
     }
   }
 }
@@ -81,7 +81,9 @@ Tool names are prefixed: `brave-search__brave_web_search`. The client calls the 
 
 Install builds a compiled binary via postinstall (`bun build --compile`); invocation is unchanged. With `--ignore-scripts`, the bin falls back to `node dist/index.js`.
 
-Pass `--verbose` for per-request trace logs.
+`--version` prints the version and exits 0. Usage errors (unknown flag, bad `--port`) print `mcp-pool: error: <msg>` to stderr and exit 2 — never a stack trace. `--help`/`-h` and `--version` exit before any config load or daemon spawn, and processes run as `mcp-pool` (visible in btop/htop).
+
+Without `--verbose`, only `warn`/`error` logs print; pass `--verbose` for per-request trace logs.
 
 ## Logging
 
