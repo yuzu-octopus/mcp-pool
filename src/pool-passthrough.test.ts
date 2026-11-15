@@ -581,7 +581,10 @@ describe("failover ownership (007-A)", () => {
 		closeCurrent: () => Promise<void>;
 	}
 
-	function failoverHarness(failingCall: () => Promise<unknown>, patterns?: string[]) {
+	function failoverHarness(
+		failingCall: () => Promise<unknown>,
+		patterns?: string[],
+	) {
 		const pool = new Pool("regression", {
 			command: "unused",
 			args: [],
@@ -597,7 +600,7 @@ describe("failover ownership (007-A)", () => {
 			spawned.push(keyIndex);
 			state.cursor = keyIndex;
 			state.client = {
-				callTool: keyIndex === 0 ? failingCall : (async () => success),
+				callTool: keyIndex === 0 ? failingCall : async () => success,
 			} as unknown as Client;
 			indices.set(state.client, keyIndex);
 		};
@@ -659,7 +662,9 @@ describe("failover ownership (007-A)", () => {
 
 	test("documentation mentioning auth errors is returned without failover", async () => {
 		const docs = {
-			content: [{ type: "text", text: "Guide: handle Invalid API key and 402." }],
+			content: [
+				{ type: "text", text: "Guide: handle Invalid API key and 402." },
+			],
 		};
 		const { pool, spawned } = failoverHarness(async () => docs);
 		await pool.start();
@@ -670,7 +675,10 @@ describe("failover ownership (007-A)", () => {
 	test("unflagged Context7 monthly quota message switches to the next key", async () => {
 		const { pool, spawned } = failoverHarness(async () => ({
 			content: [
-				{ type: "text", text: "Monthly quota reached. Upgrade for more requests." },
+				{
+					type: "text",
+					text: "Monthly quota reached. Upgrade for more requests.",
+				},
 			],
 		}));
 		await pool.start();
@@ -682,7 +690,10 @@ describe("failover ownership (007-A)", () => {
 		const { pool, spawned } = failoverHarness(
 			async () => ({
 				content: [
-					{ type: "text", text: "SCRAPING FAILED (Detail: 'API token is wrong.')." },
+					{
+						type: "text",
+						text: "SCRAPING FAILED (Detail: 'API token is wrong.').",
+					},
 				],
 			}),
 			["API token is wrong"],
@@ -696,6 +707,154 @@ describe("failover ownership (007-A)", () => {
 		const { pool, state } = failoverHarness(async () => budgetError);
 		await pool.start();
 		state.cooldowns = [Date.now() + 300_000, Date.now() + 300_000];
-		expect(JSON.stringify(await pool.routeCall("search", {}))).toContain("quota");
+		expect(JSON.stringify(await pool.routeCall("search", {}))).toContain(
+			"quota",
+		);
+	});
+});
+
+describe("transient retries (007-B)", () => {
+	const networkError = {
+		content: [{ type: "text", text: "web_search_exa error: fetch failed" }],
+		isError: true,
+	};
+	const success = { content: [{ type: "text", text: "search results" }] };
+	const retry = {
+		tools: ["web_search_exa"],
+		errorPatterns: ["^web_search_exa error: fetch failed$"],
+		delaysMs: [0, 0, 0],
+	};
+
+	interface TransientState {
+		client?: Client;
+		cooldowns: number[];
+		spawnUpstream: (index: number) => Promise<void>;
+		closeCurrent: () => Promise<void>;
+	}
+
+	function transientHarness(
+		callTool: (request: unknown) => Promise<unknown>,
+		transientRetry?: PoolConfig["transientRetry"],
+	) {
+		const pool = new Pool("transient", {
+			command: "unused",
+			args: [],
+			keys: [{ KEY: "first" }, { KEY: "replacement" }],
+			rateLimitPatterns: ["402"],
+			transientRetry,
+		});
+		const state = pool as unknown as TransientState;
+		const spawned: number[] = [];
+		state.spawnUpstream = async (index) => {
+			spawned.push(index);
+			state.client = {
+				callTool: index === 0 ? callTool : async () => success,
+			} as unknown as Client;
+		};
+		state.closeCurrent = async () => {
+			state.client = undefined;
+		};
+		return { pool, state, spawned };
+	}
+
+	test("transient errors recover on the same key with identical arguments", async () => {
+		const calls: unknown[] = [];
+		const { pool, state, spawned } = transientHarness(async (request) => {
+			calls.push(request);
+			return calls.length <= 3 ? networkError : success;
+		}, retry);
+		await pool.start();
+		expect(await pool.routeCall("web_search_exa", { query: "docs" })).toEqual(
+			success,
+		);
+		expect(calls).toEqual(
+			Array(4).fill({ name: "web_search_exa", arguments: { query: "docs" } }),
+		);
+		expect(spawned).toEqual([0]);
+		expect(state.cooldowns).toEqual([0, 0]);
+	});
+
+	test("retry exhaustion returns the original error without rotating keys", async () => {
+		let calls = 0;
+		const { pool, spawned } = transientHarness(async () => {
+			calls++;
+			return networkError;
+		}, retry);
+		await pool.start();
+		expect(await pool.routeCall("web_search_exa", {})).toEqual(networkError);
+		expect(calls).toBe(4);
+		expect(spawned).toEqual([0]);
+	});
+
+	for (const [label, tool, policy, result] of [
+		["disabled policy", "web_search_exa", undefined, networkError],
+		["unlisted tool", "write", retry, networkError],
+		[
+			"different error",
+			"web_search_exa",
+			retry,
+			{
+				...networkError,
+				content: [{ type: "text", text: "certificate expired" }],
+			},
+		],
+		[
+			"successful text mentioning errors",
+			"web_search_exa",
+			retry,
+			{ ...networkError, isError: false },
+		],
+	] as Array<[string, string, PoolConfig["transientRetry"], unknown]>) {
+		test(`${label} is not retried`, async () => {
+			let calls = 0;
+			const { pool } = transientHarness(async () => {
+				calls++;
+				return result;
+			}, policy);
+			await pool.start();
+			expect(await pool.routeCall(tool, {})).toEqual(result);
+			expect(calls).toBe(1);
+		});
+	}
+
+	test("quota errors still switch keys even if retry patterns overlap", async () => {
+		let calls = 0;
+		const { pool, spawned } = transientHarness(
+			async () => {
+				calls++;
+				return {
+					...networkError,
+					content: [{ type: "text", text: "402 Budget exceeded" }],
+				};
+			},
+			{ ...retry, errorPatterns: [".*"] },
+		);
+		await pool.start();
+		expect(await pool.routeCall("web_search_exa", {})).toEqual(success);
+		expect(calls).toBe(1);
+		expect(spawned).toEqual([0, 1]);
+	});
+
+	test("retry waiting does not block concurrent calls or use a replaced client", async () => {
+		const entered = Promise.withResolvers<void>();
+		let calls = 0;
+		const { pool, spawned } = transientHarness(
+			async () => {
+				calls++;
+				if (calls === 1) {
+					entered.resolve();
+					return networkError;
+				}
+				return { ...networkError, content: [{ type: "text", text: "402" }] };
+			},
+			{ ...retry, delaysMs: [30] },
+		);
+		await pool.start();
+		const waiting = pool.routeCall("web_search_exa", {});
+		await entered.promise;
+		expect(await pool.routeCall("web_search_exa", {})).toEqual(success);
+		expect(await waiting).toEqual(success);
+		expect(calls).toBe(2);
+		expect(spawned).toEqual([0, 1]);
 	});
 });

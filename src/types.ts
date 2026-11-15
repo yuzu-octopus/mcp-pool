@@ -4,6 +4,11 @@ export interface PoolConfig {
 	keys: Record<string, string>[];
 	cooldownSeconds?: number;
 	rateLimitPatterns: string[];
+	transientRetry?: {
+		tools: string[];
+		errorPatterns: string[];
+		delaysMs: number[];
+	};
 	cwd?: string;
 }
 
@@ -12,6 +17,15 @@ export interface ConfigFile {
 }
 
 export type LogEvent =
+	| {
+			level: "warn";
+			event: "transient_retry";
+			pool: string;
+			tool: string;
+			upstream: number;
+			attempt: number;
+			delayMs: number;
+	  }
 	| { level: "info"; event: "upstream_start"; pool: string; keyIndex: number }
 	| {
 			level: "info";

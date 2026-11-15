@@ -29,6 +29,31 @@ const PoolConfigSchema = z
 				},
 			),
 		cwd: z.string().optional(),
+		transientRetry: z
+			.object({
+				tools: z.array(z.string().min(1)).min(1),
+				errorPatterns: z
+					.array(z.string().min(1))
+					.min(1)
+					.refine(
+						(patterns) =>
+							patterns.every((pattern) => {
+								try {
+									new RegExp(pattern);
+									return true;
+								} catch {
+									return false;
+								}
+							}),
+						{
+							message:
+								"all errorPatterns entries must be valid regular expressions",
+						},
+					),
+				delaysMs: z.array(z.number().int().min(0).max(10_000)).min(1).max(5),
+			})
+			.strict()
+			.optional(),
 		strategy: z.unknown().optional(),
 		maxConsecutiveErrors: z.unknown().optional(),
 	})

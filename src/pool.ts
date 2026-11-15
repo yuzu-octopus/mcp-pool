@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type {
@@ -137,10 +138,11 @@ export class Pool {
 			}
 
 			try {
-				const result = await prepared.client.callTool({
-					name: toolName,
-					arguments: args,
-				});
+				const result = await this.callWithTransientRetry(
+					prepared,
+					toolName,
+					args,
+				);
 
 				if (
 					result.isError ||
@@ -168,6 +170,51 @@ export class Pool {
 		}
 
 		return this.exhaustedError();
+	}
+
+	/** Replay only explicitly opted-in tools; quota failures keep normal failover. */
+	private async callWithTransientRetry(
+		prepared: PreparedCall,
+		toolName: string,
+		args: Record<string, unknown>,
+	) {
+		const policy = this.config.transientRetry;
+		for (let attempt = 0; ; attempt++) {
+			const result = await prepared.client.callTool({
+				name: toolName,
+				arguments: args,
+			});
+			const errorText = stringifyContent(result.content);
+			if (
+				!result.isError ||
+				!policy?.tools.includes(toolName) ||
+				attempt >= policy.delaysMs.length ||
+				this.config.rateLimitPatterns.some((pattern) =>
+					new RegExp(pattern).test(errorText),
+				) ||
+				!policy.errorPatterns.some((pattern) =>
+					new RegExp(pattern).test(errorText),
+				)
+			)
+				return result;
+
+			const delayMs = policy.delaysMs[attempt];
+			log({
+				level: "warn",
+				event: "transient_retry",
+				pool: this.name,
+				tool: toolName,
+				upstream: prepared.keyIndex,
+				attempt: attempt + 1,
+				delayMs,
+			});
+			// Never hold the swap mutex during backoff or retry a client replaced
+			// by another caller's quota/transport failure.
+			await sleep(delayMs);
+			if (this.client !== prepared.client) {
+				throw new Error("Upstream replaced during transient retry");
+			}
+		}
 	}
 
 	async routePrompt(

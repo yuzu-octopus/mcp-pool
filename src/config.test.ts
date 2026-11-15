@@ -103,6 +103,40 @@ describe("PoolConfigSchema", () => {
 		]);
 		expect(result.data.cooldownSeconds).toBe(300);
 	});
+
+	test("transient retry requires tools, valid patterns and bounded delays", () => {
+		const base = {
+			command: "echo",
+			args: [],
+			keys: [{ KEY: "test" }],
+			rateLimitPatterns: ["402"],
+		};
+		const policy = {
+			tools: ["search"],
+			errorPatterns: ["^fetch failed$"],
+			delaysMs: [250, 750, 1500],
+		};
+		expect(
+			PoolConfigSchema.parse({ ...base, transientRetry: policy })
+				.transientRetry,
+		).toEqual(policy);
+		expect(PoolConfigSchema.parse(base).transientRetry).toBeUndefined();
+		for (const invalid of [
+			{ ...policy, tools: [] },
+			{ ...policy, errorPatterns: [] },
+			{ ...policy, errorPatterns: ["[invalid"] },
+			{ ...policy, delaysMs: [] },
+			{ ...policy, delaysMs: [-1] },
+			{ ...policy, delaysMs: [0.5] },
+			{ ...policy, delaysMs: [10001] },
+			{ ...policy, delaysMs: [0, 0, 0, 0, 0, 0] },
+		]) {
+			expect(
+				PoolConfigSchema.safeParse({ ...base, transientRetry: invalid })
+					.success,
+			).toBe(false);
+		}
+	});
 });
 
 describe("ConfigFileSchema", () => {

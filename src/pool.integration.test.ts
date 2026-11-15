@@ -204,3 +204,35 @@ describe("Pool routing", () => {
 		await pool.close();
 	});
 });
+
+describe("transient retries (007-B)", () => {
+	test("real stdio upstream recovers after three transient error results", async () => {
+		const pool = new Pool("stdio-transient", {
+			...poolConfig({
+				keys: [
+					{
+						TEST_RATE_LIMIT_EVERY_N: "1",
+						TEST_RATE_LIMIT_COUNT: "3",
+						TEST_TOOL_ERROR_TEXT: "web_search_exa error: fetch failed",
+					},
+				],
+				rateLimitPatterns: ["402"],
+			}),
+			transientRetry: {
+				tools: ["echo"],
+				errorPatterns: ["^web_search_exa error: fetch failed$"],
+				delaysMs: [0, 0, 0],
+			},
+		});
+		try {
+			await pool.start();
+			const result = await pool.routeCall("echo", { message: "unchanged" });
+			expect(result).toMatchObject({
+				content: [{ type: "text", text: '{"message":"unchanged"}' }],
+			});
+			expect(result).not.toHaveProperty("isError", true);
+		} finally {
+			await pool.close();
+		}
+	});
+});
