@@ -1,6 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+	PromptListChangedNotificationSchema,
+	ResourceListChangedNotificationSchema,
+	ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import type {
+	CompleteRequest,
+	LoggingLevel,
 	Prompt,
 	Resource,
 	ResourceTemplate,
@@ -32,6 +39,16 @@ type RouteError = {
 	isError: boolean;
 };
 
+type CompleteResult = {
+	completion: {
+		values: string[];
+		total?: number;
+		hasMore?: boolean;
+	};
+};
+
+export type ListChangedKind = "tools" | "prompts" | "resources";
+
 type Prepared = { kind: "call"; client: Client } | { kind: "skip" };
 
 export class Pool {
@@ -44,6 +61,7 @@ export class Pool {
 	private cachedResources: Resource[] = [];
 	private cachedTemplates: ResourceTemplate[] = [];
 	private upstreamCapabilities?: ServerCapabilities;
+	private listChangedListeners = new Set<(kind: ListChangedKind) => void>();
 	private started = false;
 	private routeLock: Promise<void> = Promise.resolve();
 	private cooldowns: number[] = [];
@@ -346,6 +364,57 @@ export class Pool {
 		this.cursor = (this.cursor + 1) % this.config.keys.length;
 	}
 
+	async routeComplete(
+		params: CompleteRequest["params"],
+	): Promise<CompleteResult | RouteError> {
+		if (!this.started || !this.client) {
+			return unavailableError(this.name, this.config.keys.length);
+		}
+		try {
+			const result = await this.client.complete(params);
+			return result as CompleteResult;
+		} catch {
+			return unavailableError(this.name, this.config.keys.length);
+		}
+	}
+
+	async routeSetLevel(level: LoggingLevel): Promise<RouteError | null> {
+		if (!this.started) {
+			return unavailableError(this.name, this.config.keys.length);
+		}
+		const maxKeys = this.config.keys.length;
+		for (let attempt = 0; attempt < maxKeys; attempt++) {
+			const prepared = await this.withSwap(() => this.prepareNext());
+			if (prepared.kind === "skip") continue;
+			try {
+				await prepared.client.setLoggingLevel(level);
+				return null;
+			} catch (err) {
+				await this.withSwap(() => this.markFailed(err));
+			}
+		}
+		return unavailableError(this.name, this.config.keys.length);
+	}
+
+	/** Subscribe to upstream list_changed notifications for this pool. */
+	onListChanged(listener: (kind: ListChangedKind) => void): () => void {
+		this.listChangedListeners.add(listener);
+		return () => {
+			this.listChangedListeners.delete(listener);
+		};
+	}
+
+	/** Test seam: simulate an upstream list_changed notification. */
+	debugFireListChanged(kind: ListChangedKind): void {
+		this.fireListChanged(kind);
+	}
+
+	private fireListChanged(kind: ListChangedKind): void {
+		for (const listener of this.listChangedListeners) {
+			listener(kind);
+		}
+	}
+
 	private exhaustedError(): CallResult {
 		const maxKeys = this.config.keys.length;
 		const now = Date.now();
@@ -480,6 +549,24 @@ export class Pool {
 			templates = (handshake.templates?.resourceTemplates ??
 				[]) as ResourceTemplate[];
 			this.upstreamCapabilities = handshake.caps;
+			client.setNotificationHandler(
+				ToolListChangedNotificationSchema,
+				() => {
+					this.fireListChanged("tools");
+				},
+			);
+			client.setNotificationHandler(
+				PromptListChangedNotificationSchema,
+				() => {
+					this.fireListChanged("prompts");
+				},
+			);
+			client.setNotificationHandler(
+				ResourceListChangedNotificationSchema,
+				() => {
+					this.fireListChanged("resources");
+				},
+			);
 		} catch (err) {
 			await client.close().catch(() => {});
 			throw err;

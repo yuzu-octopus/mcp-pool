@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -344,5 +345,136 @@ describe("prompts passthrough", () => {
 		expect(result.isError).toBe(true);
 		expect(pool.getPrompts().map((p) => p.name)).toEqual(["summarize"]);
 		await pool.close();
+	});
+});
+
+describe("completion + logging + list_changed", () => {
+	test("complete routes prompt ref by prefix", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			expect(client.getServerCapabilities()?.completions).toEqual({});
+			const result = await client.complete({
+				ref: { type: "ref/prompt", name: "alpha__summarize" },
+				argument: { name: "text", value: "hel" },
+			});
+			expect(result.completion.values[0]).toContain("hello summarize");
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("complete routes resource ref via URI map", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			const result = await client.complete({
+				ref: { type: "ref/resource", uri: "exa://doc-1" },
+				argument: { name: "q", value: "x" },
+			});
+			expect(result.completion.values[0]).toContain("hello from doc");
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("complete with unknown prompt pool errors", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			await expect(
+				client.complete({
+					ref: { type: "ref/prompt", name: "nope__summarize" },
+					argument: { name: "text", value: "x" },
+				}),
+			).rejects.toThrow(/Unknown pool/);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("complete with unknown resource URI errors", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			await expect(
+				client.complete({
+					ref: { type: "ref/resource", uri: "exa://nope" },
+					argument: { name: "q", value: "x" },
+				}),
+			).rejects.toThrow(/Unknown resource/);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("completions capability absent when no pool offers it", async () => {
+		const plain = new Pool(
+			"plain",
+			poolConfig("plain", { TEST_NO_COMPLETIONS: "1" }),
+		);
+		await plain.start();
+		const { client, server } = await startClient([plain]);
+		try {
+			expect(client.getServerCapabilities()?.completions).toBeUndefined();
+		} finally {
+			await closeAll([plain], client, server);
+		}
+	});
+
+	test("setLevel reaches upstream (helper records level)", async () => {
+		const levelFile = `/tmp/mcp-pool-006-level-${process.pid}.txt`;
+		const alpha = new Pool(
+			"alpha",
+			poolConfig("alpha", { TEST_LOG_LEVEL_FILE: levelFile }),
+		);
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			expect(client.getServerCapabilities()?.logging).toEqual({});
+			await client.setLoggingLevel("warning");
+			expect(fs.readFileSync(levelFile, "utf8")).toBe("warning");
+		} finally {
+			await closeAll([alpha], client, server);
+			fs.rmSync(levelFile, { force: true });
+		}
+	});
+
+	test("logging capability absent when no pool offers it", async () => {
+		const plain = new Pool(
+			"plain",
+			poolConfig("plain", { TEST_NO_LOGGING: "1" }),
+		);
+		await plain.start();
+		const { client, server } = await startClient([plain]);
+		try {
+			expect(client.getServerCapabilities()?.logging).toBeUndefined();
+		} finally {
+			await closeAll([plain], client, server);
+		}
+	});
+
+	test("list_changed from upstream surfaces as pool notification", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", {}));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			const seen: string[] = [];
+			const { ToolListChangedNotificationSchema } = await import(
+				"@modelcontextprotocol/sdk/types.js"
+			);
+			client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+				seen.push("tools-changed");
+			});
+			await alpha.debugFireListChanged("tools");
+			await new Promise((r) => setTimeout(r, 200));
+			expect(seen).toContain("tools-changed");
+		} finally {
+			await closeAll([alpha], client, server);
+		}
 	});
 });

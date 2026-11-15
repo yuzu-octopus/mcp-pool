@@ -1,12 +1,14 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
 	CallToolRequestSchema,
+	CompleteRequestSchema,
 	GetPromptRequestSchema,
 	ListPromptsRequestSchema,
 	ListResourceTemplatesRequestSchema,
 	ListResourcesRequestSchema,
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
+	SetLevelRequestSchema,
 	SubscribeRequestSchema,
 	UnsubscribeRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -83,6 +85,12 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 	const hasResources = pools.some(
 		(pool) => pool.getUpstreamCapabilities()?.resources !== undefined,
 	);
+	const hasCompletions = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.completions !== undefined,
+	);
+	const hasLogging = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.logging !== undefined,
+	);
 	const server = new Server(
 		{ name: "mcp-pool", version: packageJson.version },
 		{
@@ -92,6 +100,8 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				...(hasResources
 					? { resources: { subscribe: true, listChanged: true } }
 					: {}),
+				...(hasCompletions ? { completions: {} } : {}),
+				...(hasLogging ? { logging: {} } : {}),
 			},
 		},
 	);
@@ -337,6 +347,89 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 			return {};
 		});
 	}
+
+	if (hasCompletions) {
+		server.setRequestHandler(CompleteRequestSchema, async (request) => {
+			const ref = request.params.ref as
+				| { type: "ref/prompt"; name: string }
+				| { type: "ref/resource"; uri: string };
+			let pool: Pool | undefined;
+			if (ref.type === "ref/prompt") {
+				const split = splitPrefix(ref.name, "prompt");
+				if ("error" in split) {
+					throw new Error(split.error);
+				}
+				pool = pools.find((p) => p.name === split.poolName);
+				if (!pool) {
+					throw new Error(`Unknown pool: "${split.poolName}"`);
+				}
+				log({
+					level: "info",
+					event: "route_complete",
+					pool: pool.name,
+					ref: ref.name,
+					upstream: -1,
+				});
+				const result = await pool.routeComplete({
+					...request.params,
+					ref: { type: "ref/prompt", name: split.short },
+				});
+				if ("isError" in result && result.isError) {
+					throw new Error(result.content[0].text);
+				}
+				return result;
+			}
+			pool = uriToPool.get(ref.uri) ?? findUriPool(ref.uri);
+			if (!pool) {
+				throw new Error(`Unknown resource: "${ref.uri}"`);
+			}
+			log({
+				level: "info",
+				event: "route_complete",
+				pool: pool.name,
+				ref: ref.uri,
+				upstream: -1,
+			});
+			const result = await pool.routeComplete(request.params);
+			if ("isError" in result && result.isError) {
+				throw new Error(result.content[0].text);
+			}
+			return result;
+		});
+	}
+
+	if (hasLogging) {
+		server.setRequestHandler(SetLevelRequestSchema, async (request) => {
+			// Shared upstream: best-effort forward to every connected pool.
+			await Promise.allSettled(
+				pools.map((pool) => pool.routeSetLevel(request.params.level)),
+			);
+			return {};
+		});
+	}
+
+	// list_changed fan-out: each session subscribes once at build time to the
+	// shared pool emitters; deregisters when the session closes so dead
+	// sessions stop receiving (and holding) notifications.
+	const unsubscribes: Array<() => void> = [];
+	for (const pool of pools) {
+		unsubscribes.push(
+			pool.onListChanged((kind) => {
+				if (kind === "tools") {
+					void server.sendToolListChanged().catch(() => {});
+				} else if (kind === "prompts") {
+					void server.sendPromptListChanged().catch(() => {});
+				} else {
+					void server.sendResourceListChanged().catch(() => {});
+				}
+			}),
+		);
+	}
+	const originalClose = server.close.bind(server);
+	server.close = async () => {
+		for (const unsubscribe of unsubscribes) unsubscribe();
+		await originalClose();
+	};
 
 	function findUriPool(uri: string): Pool | undefined {
 		for (const pool of pools) {
