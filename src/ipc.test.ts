@@ -59,14 +59,8 @@ describe("daemonSpawnArgs", () => {
 	});
 
 	test("empty execPath passes through verbatim (guard lives in spawnDaemon)", () => {
-		expect(daemonSpawnArgs("", "/app/dist/index.js", CFG, SOCK, false)).toEqual([
-			"",
-			"/app/dist/index.js",
-			"--daemon",
-			"--config",
-			CFG,
-			"--socket",
-			SOCK,
-		]);
+		expect(daemonSpawnArgs("", "/app/dist/index.js", CFG, SOCK, false)).toEqual(
+			["", "/app/dist/index.js", "--daemon", "--config", CFG, "--socket", SOCK],
+		);
 	});
 });

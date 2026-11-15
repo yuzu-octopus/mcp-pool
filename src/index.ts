@@ -4,8 +4,10 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer, type Server as NetServer } from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { LoadedConfig } from "./config.js";
 import { ConfigError, loadConfig } from "./config.js";
+import { replyJsonError } from "./http-error.js";
 import type { RuntimePaths } from "./ipc.js";
 import {
 	clearStatus,
@@ -16,7 +18,7 @@ import {
 	writeStatus,
 } from "./ipc.js";
 import { log } from "./logger.js";
-import { replyJsonError } from "./http-error.js";
+import type { Pool } from "./pool.js";
 import { buildServer, startPools } from "./server.js";
 import { SocketTransport } from "./socket-transport.js";
 
@@ -202,6 +204,11 @@ async function runDaemon(
 /**
  * Web server mode. One stateless Streamable HTTP endpoint serves any number of
  * remote MCP clients over the shared pools.
+ *
+ * Runtime shape: Bun.serve when available (fetch-native SDK transport, no
+ * Node<->Web Standard conversion per request), node:http otherwise. The node
+ * path stays as the fallback for non-Bun runtimes. Set MCP_POOL_HTTP_NODE=1
+ * to force the node:http path for testing.
  */
 async function runHttp(
 	loaded: LoadedConfig,
@@ -210,7 +217,91 @@ async function runHttp(
 	host: string,
 ): Promise<void> {
 	const pools = await startPools(loaded.config.pools);
+	const useBunServer =
+		typeof Bun !== "undefined" &&
+		typeof Bun.serve === "function" &&
+		process.env.MCP_POOL_HTTP_NODE !== "1";
+	if (useBunServer) {
+		await runBunHttp(pools, verbose, port, host);
+	} else {
+		await runNodeHttp(pools, verbose, port, host);
+	}
+}
 
+function listenLog(host: string, port: number): void {
+	log({ level: "info", event: "upstream_start", pool: "http", keyIndex: 0 });
+	console.error(`mcp-pool http listening on ${host}:${port}`);
+}
+
+function closePools(pools: Pool[]): void {
+	void Promise.allSettled(pools.map((p) => p.close())).then(() =>
+		process.exit(0),
+	);
+}
+
+/**
+ * Fetch-native path: per-request WebStandard transport served by Bun.serve.
+ * server.timeout(req, 0) disables Bun's 10s default idle close so slow SSE
+ * tool calls are not reset; node:http has no such default.
+ */
+async function runBunHttp(
+	pools: Pool[],
+	verbose: boolean,
+	port: number,
+	host: string,
+): Promise<void> {
+	const server = Bun.serve({
+		port,
+		hostname: host,
+		fetch: async (req, server) => {
+			const url = new URL(req.url);
+			if (req.method === "POST" && url.pathname === "/mcp") {
+				server.timeout(req, 0);
+				try {
+					const mcp = buildServer(pools, verbose);
+					const transport = new WebStandardStreamableHTTPServerTransport({
+						sessionIdGenerator: undefined,
+					});
+					await mcp.connect(transport);
+					return transport.handleRequest(req);
+				} catch (err: unknown) {
+					return Response.json(
+						{
+							jsonrpc: "2.0",
+							error: { code: -32000, message: String(err) },
+							id: null,
+						},
+						{ status: 500 },
+					);
+				}
+			}
+			if (req.method === "GET" && url.pathname === "/health") {
+				return Response.json({ status: "ok", tools: pools.length });
+			}
+			return Response.json(
+				{ error: `no route for ${req.method} ${url.pathname}` },
+				{ status: 404 },
+			);
+		},
+	});
+
+	listenLog(host, server.port ?? port);
+	const shutdown = () => {
+		void server.stop();
+		closePools(pools);
+	};
+	process.on("SIGTERM", shutdown);
+	process.on("SIGINT", shutdown);
+	await new Promise(() => {});
+}
+
+/** node:http fallback path: per-request node SDK transport. */
+async function runNodeHttp(
+	pools: Pool[],
+	verbose: boolean,
+	port: number,
+	host: string,
+): Promise<void> {
 	const http = createHttpServer((req, res) => {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		if (req.method === "POST" && url.pathname === "/mcp") {
@@ -245,13 +336,11 @@ async function runHttp(
 	});
 
 	await new Promise<void>((resolve) => http.listen(port, host, resolve));
-	log({ level: "info", event: "upstream_start", pool: "http", keyIndex: 0 });
+	listenLog(host, port);
 
 	const shutdown = () => {
 		http.close();
-		void Promise.allSettled(pools.map((p) => p.close())).then(() =>
-			process.exit(0),
-		);
+		closePools(pools);
 	};
 	process.on("SIGTERM", shutdown);
 	process.on("SIGINT", shutdown);

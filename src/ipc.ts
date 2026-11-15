@@ -183,8 +183,7 @@ export function spawnDaemon(
 	configPath: string,
 	verbose: boolean,
 ): void {
-	if (!process.execPath)
-		throw new Error("cannot determine daemon executable");
+	if (!process.execPath) throw new Error("cannot determine daemon executable");
 
 	const args = daemonSpawnArgs(
 		process.execPath,
