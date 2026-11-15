@@ -246,20 +246,80 @@ function loadOrExit(path: string | undefined): LoadedConfig {
 	}
 }
 
+// Local redaction for daemon status writes; keep in sync if a shared helper lands elsewhere.
+export function redactSecrets(message: string): string {
+	return message.replace(new RegExp("sk-[A-Za-z0-9_-]{8,}", "g"), "[redacted]").replace(new RegExp("Bearer[ \t]+[^ \t\r\n\"'}]+", "gi"), "Bearer [redacted]").replace(new RegExp("api[_-]?key[\"' \t:=]+[^ \t\r\n\"'},;]+", "gi"), "[redacted]").replace(new RegExp("-----BEGIN [A-Z ]+-----[^]*?-----END [A-Z ]+-----", "g"), "[redacted]");
+}
+
+// Stream helper keeps close-after-handoff exact when the upstream body errors.
+export function pipedBodyWithFinish(body: ReadableStream<Uint8Array>, finish: () => void): ReadableStream<Uint8Array> {
+	const passthrough = new TransformStream({
+		flush: () => {
+			finish();
+		},
+	});
+	const readable = passthrough.readable as ReadableStream<Uint8Array>;
+	const origCancel = readable.cancel.bind(readable);
+	readable.cancel = (reason?: unknown) => {
+		finish();
+		return origCancel(reason);
+	};
+	void body.pipeTo(passthrough.writable).then(
+		() => {},
+		() => {
+			finish();
+		},
+	);
+	return readable;
+}
+
 /** Default mode: an agent's stdio session, served by the shared daemon. */
 async function runProxy(loaded: LoadedConfig, verbose: boolean): Promise<void> {
 	const paths = runtimePaths(loaded.path);
 	const socket = await connectOrSpawn(paths, loaded.path, verbose);
-
 	// Pure byte pipe. MCP over stdio is newline-delimited JSON and the daemon
 	// reads the same framing, so no MCP logic is needed here.
 	process.stdin.pipe(socket);
 	socket.pipe(process.stdout);
-
+	let stdinEnded = false;
+	const cleanupProxy = () => {
+		try {
+			process.stdin.unpipe(socket);
+		} catch {
+		}
+		try {
+			const s = process.stdin as unknown as { destroy?: () => void };
+			s.destroy?.();
+		} catch {
+		}
+		try {
+			socket.unpipe(process.stdout);
+		} catch {
+		}
+		try {
+			socket.end();
+		} catch {
+		}
+	};
 	await new Promise<void>((resolve) => {
 		// Agent going away (stdin EOF) ends the daemon-side session.
-		process.stdin.on("end", () => socket.end());
-		socket.on("close", () => resolve());
+		process.stdin.on("end", () => {
+			stdinEnded = true;
+			try {
+				socket.end();
+			} catch {
+			}
+		});
+		const onSocketGone = () => {
+			if (stdinEnded) {
+				resolve();
+				return;
+			}
+			cleanupProxy();
+			process.exit(1);
+		};
+		socket.on("close", onSocketGone);
+		socket.on("error", onSocketGone);
 	});
 }
 
@@ -302,7 +362,7 @@ async function runDaemon(
 		pools = await startPools(loaded.config.pools);
 	} catch (err) {
 		// Surface the real reason to whichever proxy is waiting on the socket.
-		writeStatus(paths, err instanceof Error ? err.message : String(err));
+		writeStatus(paths, redactSecrets(err instanceof Error ? err.message : String(err)));
 		throw err;
 	}
 
@@ -460,12 +520,7 @@ async function runBunHttp(
 							headers: upstreamRes.headers,
 						});
 					}
-					const passthrough = new TransformStream({
-						flush: () => {
-							finish();
-						},
-					});
-					return new Response(upstreamRes.body.pipeThrough(passthrough), {
+					return new Response(pipedBodyWithFinish(upstreamRes.body, finish), {
 						status: upstreamRes.status,
 						headers: upstreamRes.headers,
 					});
@@ -570,7 +625,9 @@ async function main(): Promise<void> {
 	}
 }
 
-main().catch((err) => {
-	console.error("mcp-pool fatal:", err);
-	process.exit(1);
-});
+if (process.env.MCP_POOL_NO_MAIN !== "1") {
+	main().catch((err) => {
+		console.error("mcp-pool fatal:", err);
+		process.exit(1);
+	});
+}

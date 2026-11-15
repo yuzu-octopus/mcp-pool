@@ -8,18 +8,22 @@ function fakeSocket(): EventEmitter & {
 	write: (data: string, cb: (err?: Error) => void) => void;
 	destroy: () => void;
 	sent: string[];
+	destroyed: boolean;
 } {
 	const emitter = new EventEmitter() as EventEmitter & {
 		write: (data: string, cb: (err?: Error) => void) => void;
 		destroy: () => void;
 		sent: string[];
+		destroyed: boolean;
 	};
 	emitter.sent = [];
+	emitter.destroyed = false;
 	emitter.write = (data: string, cb: (err?: Error) => void) => {
 		emitter.sent.push(data);
 		cb();
 	};
 	emitter.destroy = () => {
+		emitter.destroyed = true;
 		emitter.emit("close");
 	};
 	return emitter;
@@ -107,4 +111,36 @@ describe("SocketTransport framing", () => {
 			JSON.stringify(msg).length,
 		);
 	});
+	test("errors and destroys past 32MB without a newline", async () => {
+		const { socket, errors } = await setup();
+		const s = socket as unknown as { destroyed: boolean };
+		for (let i = 0; i < 33; i++) {
+			socket.emit("data", Buffer.alloc(1024 * 1024, 97));
+		}
+		expect(errors.length).toBeGreaterThanOrEqual(1);
+		expect(s.destroyed).toBe(true);
+	});
+
+	test("close fires onclose once", async () => {
+		const { socket, transport } = await setup();
+		let calls = 0;
+		transport.onclose = () => {
+			calls++;
+		};
+		await transport.close();
+		socket.emit("close");
+		expect(calls).toBe(1);
+	});
+
+	test("socket close first then close fires onclose once", async () => {
+		const { socket, transport } = await setup();
+		let calls = 0;
+		transport.onclose = () => {
+			calls++;
+		};
+		socket.emit("close");
+		await transport.close();
+		expect(calls).toBe(1);
+	});
+
 });
