@@ -25,7 +25,7 @@ import { collectSecrets, redactSecrets as scrubSecrets } from "./redact.js";
 import type { PoolConfig } from "./types.js";
 
 /** Upstream spawn/connect budget; a hung subprocess must not block startup. */
-const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
+export const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
 /** Per-tick Date.now() cache for cooldown comparisons: one clock sample is
  * shared by every check in the same tick instead of sampling per call. Reset
  * via microtask, so the next tick re-samples. Monotonic enough for cooldown

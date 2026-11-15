@@ -326,19 +326,16 @@ async function runLocal(loaded: LoadedConfig, verbose: boolean): Promise<void> {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 
-	process.on("SIGINT", async () => {
+	// Stdin EOF is how an MCP client ends a stdio session. Closing only the
+	// server would leave the upstream subprocesses holding this process open.
+	const shutdown = async () => {
 		await server.close().catch(() => {});
 		await Promise.allSettled(pools.map((p) => p.close()));
 		process.exit(0);
-	});
-	process.on("SIGTERM", async () => {
-		await server.close().catch(() => {});
-		await Promise.allSettled(pools.map((p) => p.close()));
-		process.exit(0);
-	});
-	process.stdin.on("end", () => {
-		void server.close().catch(() => {});
-	});
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
+	process.stdin.on("end", shutdown);
 }
 
 /**
@@ -381,6 +378,12 @@ async function runDaemon(
 		process.exit(0);
 	}
 
+	// With no agents attached, a short grace period lets a quick restart (for
+	// example /mcp reload) reuse live upstreams instead of re-spawning.
+	function armIdleShutdown(): void {
+		idleTimer = setTimeout(() => void shutdown(), IDLE_GRACE_MS);
+	}
+
 	server = createServer((socket) => {
 		open++;
 		clearTimeout(idleTimer);
@@ -402,11 +405,7 @@ async function runDaemon(
 		socket.on("close", () => {
 			void session.close().catch(() => {});
 			open--;
-			if (open > 0 || shuttingDown) return;
-
-			// Last agent left. A short grace period lets a quick restart (for
-			// example /mcp reload) reuse live upstreams instead of re-spawning.
-			idleTimer = setTimeout(() => void shutdown(), IDLE_GRACE_MS);
+			if (open === 0 && !shuttingDown) armIdleShutdown();
 		});
 	});
 
@@ -415,21 +414,24 @@ async function runDaemon(
 			reject(new Error("daemon server not created"));
 			return;
 		}
-		server.once("error", (err: NodeJS.ErrnoException) => {
+		const onListenError = (err: NodeJS.ErrnoException) => {
 			// Another daemon won the race for this socket. The proxy waiting on it
 			// will connect to that one, so exit quietly rather than alarming users.
 			if (err.code === "EADDRINUSE") {
 				process.exit(0);
 			}
 			reject(err);
-		});
+		};
+		server.once("error", onListenError);
 		server.listen(paths.socket, () => {
-			server?.off("error", reject);
+			server?.off("error", onListenError);
 			resolve();
 		});
 	});
-	clearStatus(paths);
 	writeStatus(paths, "ready");
+	// The proxy that spawned us may have given up or died before connecting;
+	// without this a daemon nobody ever reaches would live forever.
+	if (open === 0) armIdleShutdown();
 	log({ level: "info", event: "upstream_start", pool: "daemon", keyIndex: 0 });
 
 	process.on("SIGTERM", () => void shutdown());

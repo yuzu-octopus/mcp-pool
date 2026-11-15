@@ -114,6 +114,34 @@ describe("connectOrSpawn single-spawn (CORRECT-07)", () => {
 	});
 });
 
+describe("connectOrSpawn status file", () => {
+	test("a failure left by an earlier daemon does not fail a fresh spawn", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-pool-ipc-stale-"));
+		const socket = join(dir, "d.sock");
+		const paths: RuntimePaths = { dir, socket, status: `${socket}.status` };
+		writeStatus(paths, 'Pool "p": all 1 key(s) failed to connect');
+		const server = createServer((s) => {
+			s.on("error", () => {});
+			s.end();
+		});
+		try {
+			const sock = await connectOrSpawn(
+				paths,
+				join(dir, "c.yaml"),
+				false,
+				() => {
+					// The fresh daemon comes up after the first retry.
+					setTimeout(() => server.listen(socket), 100);
+				},
+			);
+			sock.destroy();
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("runtime permissions (SEC-01)", () => {
 	test("ensureRuntimeDir creates the dir owner-only", () => {
 		const base = mkdtempSync(join(tmpdir(), "mcp-pool-ipc-dir-"));

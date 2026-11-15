@@ -11,11 +11,16 @@ import {
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { UPSTREAM_CONNECT_TIMEOUT_MS } from "./pool.js";
 
-/** Window the last agent waits before a quiet daemon shuts itself down. */
+/** Window a daemon with no agents waits before it shuts itself down. */
 export const IDLE_GRACE_MS = 3_000;
-/** How long a freshly spawned proxy waits for the daemon's socket to appear. */
-const DAEMON_START_TIMEOUT_MS = 10_000;
+/**
+ * How long a freshly spawned proxy waits for the daemon's socket to appear.
+ * Outlasts one upstream connect (a cold `bunx -y` install can take a while);
+ * a daemon that fails reports it through the status file well before this.
+ */
+const DAEMON_START_TIMEOUT_MS = UPSTREAM_CONNECT_TIMEOUT_MS + 5_000;
 const RETRY_BACKOFF_MS = 25;
 
 export interface RuntimePaths {
@@ -159,6 +164,9 @@ export async function connectOrSpawn(
 		if (socketAlive(paths.socket)) {
 			rmSync(paths.socket, { force: true });
 		}
+		// A status left by an earlier daemon that failed to start would
+		// otherwise fail this attempt before the new daemon can report.
+		clearStatus(paths);
 		// Spawn at most once per call: a slow daemon still starting reads as
 		// ECONNREFUSED, which must not trigger a second spawn. After spawning,
 		// go straight to the retry loop and wait for the socket to appear.

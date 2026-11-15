@@ -135,6 +135,42 @@ test(
 	SHUTDOWN_WAIT_MS + 10_000,
 );
 
+test(
+	"a daemon no agent ever reaches exits after the grace period",
+	async () => {
+		const harness = makeConfig();
+		// What a proxy leaves behind when it dies or times out after spawning.
+		const daemon = Bun.spawn({
+			cmd: [
+				"bun",
+				"run",
+				"src/index.ts",
+				"--daemon",
+				"--config",
+				harness.configFile,
+				"--socket",
+				harness.socket,
+			],
+			stdout: "ignore",
+			stderr: "ignore",
+		});
+		try {
+			const exit = await Promise.race([
+				daemon.exited,
+				new Promise((r) =>
+					setTimeout(() => r("still running"), SHUTDOWN_WAIT_MS),
+				),
+			]);
+			expect(exit).toBe(0);
+			expect(existsSync(harness.socket)).toBe(false);
+		} finally {
+			daemon.kill();
+			await harness.cleanup();
+		}
+	},
+	SHUTDOWN_WAIT_MS + 5_000,
+);
+
 test("recovers when a crashed daemon leaves a stale socket", async () => {
 	const harness = makeConfig();
 
@@ -224,8 +260,8 @@ test("daemon startup failure surfaces the real reason, fast", async () => {
 
 	try {
 		const startedAt = Date.now();
-		// Must reject. A 10s spin instead of a fast reject means the status file
-		// is not being written or read.
+		// Must reject. Spinning to the start timeout instead of a fast reject
+		// means the status file is not being written or read.
 		await expect(client.connect(transport)).rejects.toThrow();
 		const elapsed = Date.now() - startedAt;
 		expect(elapsed).toBeLessThan(8_000);
