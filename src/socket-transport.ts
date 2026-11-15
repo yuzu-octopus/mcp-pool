@@ -9,7 +9,9 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
  */
 export class SocketTransport implements Transport {
 	private readonly socket: Socket;
-	private buffer = "";
+	private chunks: Buffer[] = [];
+	private bufferedBytes = 0;
+	private skipBytes = 0;
 	private started = false;
 	private closed = false;
 
@@ -56,12 +58,20 @@ export class SocketTransport implements Transport {
 	}
 
 	private onData(chunk: Buffer): void {
-		this.buffer += chunk.toString("utf8");
+		if (chunk.length === 0) return;
+		this.chunks.push(chunk);
+		this.bufferedBytes += chunk.length;
 
-		let index = this.buffer.indexOf("\n");
-		while (index !== -1) {
-			const line = this.buffer.slice(0, index);
-			this.buffer = this.buffer.slice(index + 1);
+		for (;;) {
+			const newlineAt = this.indexOfNewline();
+			if (newlineAt === -1) {
+				this.skipBytes = this.bufferedBytes;
+				return;
+			}
+
+			const line = this.takeBytes(newlineAt).toString("utf8");
+			this.dropBytes(newlineAt + 1);
+			this.skipBytes = 0;
 
 			if (line.trim().length > 0) {
 				try {
@@ -70,8 +80,45 @@ export class SocketTransport implements Transport {
 					this.onerror?.(err instanceof Error ? err : new Error(String(err)));
 				}
 			}
+		}
+	}
 
-			index = this.buffer.indexOf("\n");
+	private indexOfNewline(): number {
+		let logical = 0;
+		for (const chunk of this.chunks) {
+			const from = Math.max(0, this.skipBytes - logical);
+			const found = chunk.indexOf(0x0a, from);
+			if (found !== -1) return logical + found;
+			logical += chunk.length;
+		}
+		return -1;
+	}
+
+	private takeBytes(length: number): Buffer {
+		const parts: Buffer[] = [];
+		let remaining = length;
+		for (const chunk of this.chunks) {
+			if (remaining <= 0) break;
+			const end = Math.min(remaining, chunk.length);
+			parts.push(chunk.subarray(0, end));
+			remaining -= end;
+		}
+		return Buffer.concat(parts, length);
+	}
+
+	private dropBytes(count: number): void {
+		let remaining = count;
+		while (remaining > 0 && this.chunks.length > 0) {
+			const head = this.chunks[0];
+			if (head.length <= remaining) {
+				this.chunks.shift();
+				remaining -= head.length;
+				this.bufferedBytes -= head.length;
+			} else {
+				this.chunks[0] = head.subarray(remaining);
+				this.bufferedBytes -= remaining;
+				remaining = 0;
+			}
 		}
 	}
 }
