@@ -146,6 +146,35 @@ async function connectWithRetry(paths: RuntimePaths): Promise<Socket> {
 }
 
 /**
+ * Computes the argv for re-execing the daemon. Three runtimes:
+ * - `bun run src/index.ts`: argv[1] is the script path, keep it.
+ * - `node dist/index.js`: argv[1] is the script path, keep it.
+ * - compiled binary (`bun build --compile`): argv[1] is Bun's virtual-FS
+ *   path (`/$bunfs/...`), not a real script, so re-exec the binary directly.
+ *   (A leading-dash argv[1] means the same thing: no script entry.)
+ */
+export function daemonSpawnArgs(
+	execPath: string,
+	argv1: string | undefined,
+	configPath: string,
+	socketPath: string,
+	verbose: boolean,
+): string[] {
+	const rest = ["--daemon", "--config", configPath, "--socket", socketPath];
+	if (verbose) rest.push("--verbose");
+	// Under bun/node with a script entry, argv[1] is that script and must be
+	// kept. In a compiled binary argv[1] is the virtual-FS path of the entry
+	// (or, on some builds, the first user flag) — neither is re-execable.
+	if (
+		argv1 !== undefined &&
+		!argv1.startsWith("-") &&
+		!argv1.startsWith("/$bunfs/")
+	)
+		return [execPath, argv1, ...rest];
+	return [execPath, ...rest];
+}
+
+/**
  * Spawns a detached daemon so it outlives the agent that started it. That is
  * what lets a second agent reuse it instead of forking its own copies.
  */
@@ -154,23 +183,18 @@ export function spawnDaemon(
 	configPath: string,
 	verbose: boolean,
 ): void {
-	// Re-exec the entry that is already running: dev mode is src/index.ts,
-	// installed mode is dist/index.js. argv[1] is correct for both.
-	const entry = process.argv[1];
-	if (!entry)
-		throw new Error("cannot determine daemon entry from process.argv[1]");
+	if (!process.execPath && process.argv[1] === undefined)
+		throw new Error("cannot determine daemon executable");
 
-	const argv = [
-		entry,
-		"--daemon",
-		"--config",
+	const args = daemonSpawnArgs(
+		process.execPath,
+		process.argv[1],
 		configPath,
-		"--socket",
 		paths.socket,
-	];
-	if (verbose) argv.push("--verbose");
+		verbose,
+	);
 
-	const child = spawn(process.execPath, argv, {
+	const child = spawn(args[0], args.slice(1), {
 		detached: true,
 		stdio: "ignore",
 	});
