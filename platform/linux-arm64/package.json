@@ -1,0 +1,14 @@
+{
+	"cpu": [
+		"arm64"
+	],
+	"files": [
+		"bin/"
+	],
+	"license": "MIT",
+	"name": "@yuzu-octopus/mcp-pool-linux-arm64",
+	"os": [
+		"linux"
+	],
+	"version": "0.4.0"
+}
