@@ -57,4 +57,16 @@ describe("daemonSpawnArgs", () => {
 			daemonSpawnArgs("/tmp/mcp-pool", undefined, CFG, SOCK, false),
 		).toEqual(["/tmp/mcp-pool", "--daemon", "--config", CFG, "--socket", SOCK]);
 	});
+
+	test("empty execPath passes through verbatim (guard lives in spawnDaemon)", () => {
+		expect(daemonSpawnArgs("", "/app/dist/index.js", CFG, SOCK, false)).toEqual([
+			"",
+			"/app/dist/index.js",
+			"--daemon",
+			"--config",
+			CFG,
+			"--socket",
+			SOCK,
+		]);
+	});
 });
