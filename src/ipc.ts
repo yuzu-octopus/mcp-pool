@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -33,10 +33,44 @@ export function runtimePaths(configPath: string): RuntimePaths {
 	return { dir: dirname(socket), socket, status: `${socket}.status` };
 }
 
+/**
+ * Best-effort chmod, applied only to paths owned by this user. Never touches
+ * a foreign path: an explicit socket location may live in a shared directory
+ * whose permissions must keep their existing shape.
+ */
+function chmodIfOurs(path: string, mode: number): void {
+	try {
+		if (
+			typeof process.getuid === "function" &&
+			statSync(path).uid !== process.getuid()
+		)
+			return;
+		chmodSync(path, mode);
+	} catch {
+		// Raced away or not ours — the caller still works, perms stay as-is.
+	}
+}
+
+/**
+ * Creates the runtime dir owner-only (0700) and tightens leftovers from
+ * older runs. The socket and status file live here, so group/other must not
+ * be able to list or traverse it — otherwise any local user could talk to
+ * the daemon and ride the victim's keys. Runs proxy-side before spawning,
+ * so the daemon inherits the tight dir even though its own mkdir leaves an
+ * existing dir's permissions untouched.
+ */
+export function ensureRuntimeDir(paths: RuntimePaths): void {
+	mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+	// mkdir's mode only applies to freshly created dirs; tighten the rest.
+	chmodIfOurs(paths.dir, 0o700);
+}
+
 /** Writes "ready" or the daemon's startup error so proxies fail fast. */
 export function writeStatus(paths: RuntimePaths, message: string): void {
 	try {
-		writeFileSync(paths.status, message);
+		writeFileSync(paths.status, message, { mode: 0o600 });
+		// mode only applies on creation; tighten files left by older runs.
+		chmodIfOurs(paths.status, 0o600);
 	} catch {
 		// A missing status file only costs the proxy an extra retry.
 	}
@@ -90,6 +124,11 @@ export function connectOnce(socketPath: string): Promise<Socket> {
 			socket.off("error", onError);
 			// Errors after the handshake are reported to the caller by 'close'.
 			socket.on("error", () => {});
+			// The daemon creates the socket under a default umask; tighten it
+			// now that it exists. The owner-only runtime dir already keeps
+			// other users out; this is defense in depth for socket locations
+			// whose parent dir is shared.
+			chmodIfOurs(socketPath, 0o600);
 			resolvePromise(socket);
 		});
 	});
@@ -100,21 +139,23 @@ export async function connectOrSpawn(
 	paths: RuntimePaths,
 	configPath: string,
 	verbose: boolean,
+	spawnFn: typeof spawnDaemon = spawnDaemon,
 ): Promise<Socket> {
-	// Two agents can race to spawn; the loser's daemon hits EADDRINUSE and exits,
-	// so the loser only has to retry connecting.
-	for (let attempt = 0; attempt < 2; attempt++) {
-		try {
-			return await connectOnce(paths.socket);
-		} catch (err) {
-			if (!isStaleSocket(err)) throw err;
-			// ENOENT: no daemon yet. ECONNREFUSED: socket left over from a crashed
-			// daemon. Either way the file cannot be trusted.
-			if (socketAlive(paths.socket)) {
-				rmSync(paths.socket, { force: true });
-			}
-			spawnDaemon(paths, configPath, verbose);
+	// Two agents can race to spawn; the loser's daemon hits EADDRINUSE and
+	// exits, so the loser only has to retry connecting.
+	try {
+		return await connectOnce(paths.socket);
+	} catch (err) {
+		if (!isStaleSocket(err)) throw err;
+		// ENOENT: no daemon yet. ECONNREFUSED: socket left over from a crashed
+		// daemon. Either way the file cannot be trusted.
+		if (socketAlive(paths.socket)) {
+			rmSync(paths.socket, { force: true });
 		}
+		// Spawn at most once per call: a slow daemon still starting reads as
+		// ECONNREFUSED, which must not trigger a second spawn. After spawning,
+		// go straight to the retry loop and wait for the socket to appear.
+		spawnFn(paths, configPath, verbose);
 	}
 
 	return await connectWithRetry(paths);
@@ -184,6 +225,9 @@ export function spawnDaemon(
 	verbose: boolean,
 ): void {
 	if (!process.execPath) throw new Error("cannot determine daemon executable");
+	// Owner-only dir before the daemon listens, so the socket and status
+	// file are born unreachable by other local users.
+	ensureRuntimeDir(paths);
 
 	const args = daemonSpawnArgs(
 		process.execPath,
