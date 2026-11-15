@@ -735,6 +735,31 @@ describe("failover ownership (007-A)", () => {
 			"quota",
 		);
 	});
+
+	test("swap sections never overlap under concurrent failovers", async () => {
+		const { pool } = failoverHarness(async () => budgetError);
+		await pool.start();
+		const st = pool as unknown as Record<string, (fn: () => unknown) => unknown>;
+		const origSwap = st["withSwap"].bind(pool);
+		let active = 0;
+		let maxActive = 0;
+		st["withSwap"] = async (fn: () => unknown) => {
+			const wrapped = async () => {
+				active++;
+				maxActive = Math.max(maxActive, active);
+				try {
+					return await fn();
+				} finally {
+					active--;
+				}
+			};
+			return origSwap(wrapped);
+		};
+		await Promise.all(
+			Array.from({ length: 6 }, () => pool.routeCall("search", {})),
+		);
+		expect(maxActive).toBe(1);
+	});
 });
 
 describe("transient retries (007-B)", () => {

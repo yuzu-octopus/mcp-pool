@@ -110,6 +110,10 @@ export class Pool {
 	// Fast-path flag for withSwap: true while no swap section is running or
 	// queued. Flipped synchronously, so exactly one contender sees idle.
 	private routeLockIdle = true;
+	// Queued slow-path waiters. Keeps the flag down across handoffs: while a
+	// waiter is queued or running, new callers must queue behind it instead
+	// of barging in on the fast path.
+	private routeLockWaiters = 0;
 
 	constructor(name: string, config: PoolConfig) {
 		this.name = name;
@@ -389,7 +393,11 @@ export class Pool {
 	 * in-flight callTool runs outside it.
 	 */
 	private async withSwap<T>(fn: () => T | Promise<T>): Promise<T> {
-		if (this.routeLockIdle) {
+		// Waiters guard the handoff: a releaser that wakes a queued caller
+		// must leave the flag down, otherwise an already-queued continuation
+		// positioned behind the releaser but ahead of the waiter would see
+		// idle and barge in on the fast path while the waiter also proceeds.
+		if (this.routeLockIdle && this.routeLockWaiters === 0) {
 			// Fast path: the lock is uncontended, so run inline without extra
 			// promise allocations or microtask hops. The flag flip is
 			// synchronous, so a concurrent caller can only take the queued
@@ -400,18 +408,21 @@ export class Pool {
 			try {
 				return await fn();
 			} finally {
-				this.routeLockIdle = true;
+				if (this.routeLockWaiters === 0) this.routeLockIdle = true;
 				next.resolve();
 			}
 		}
+		this.routeLockWaiters++;
 		const prev = this.routeLock;
 		const next = Promise.withResolvers<void>();
 		this.routeLock = next.promise;
-		await prev;
-
 		try {
+			await prev;
+			this.routeLockIdle = false;
 			return await fn();
 		} finally {
+			this.routeLockWaiters--;
+			if (this.routeLockWaiters === 0) this.routeLockIdle = true;
 			next.resolve();
 		}
 	}
