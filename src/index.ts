@@ -43,7 +43,67 @@ Options:
   --host <h>       HTTP host (default: 127.0.0.1, with --http)
   --verbose        Per-request trace logs (JSON lines on stderr)
   --help, -h       Show this help
+  --help-detailed  Setup guide: config file, examples, modes, logs
   --version        Print version and exit`;
+
+const DETAILED_HELP = `mcp-pool setup guide (v${packageJson.version})
+
+Config file (first found wins):
+  --config <path>, ./mcp-pool.yaml, ./.mcp-pool.yaml, ~/.config/mcp-pool/mcp-pool.yaml
+  (.yml variants are accepted in the same positions)
+
+Minimal stdio pool (spawns one subprocess per pool, failing over across keys):
+
+pools:
+  brave-search:
+    command: bunx
+    args: ["-y", "@brave/brave-search-mcp-server@2.1.4"]
+    keys:
+      - {BRAVE_API_KEY: "sk-first"}
+      - {BRAVE_API_KEY: "sk-second"}
+    rateLimitPatterns:
+      - "rate_limit_exceeded"
+
+Minimal remote pool (transport http; sse works the same way):
+
+pools:
+  web-search:
+    transport: http
+    url: https://mcp.example.com/mcp
+    headers:
+      Content-Type: application/json
+    keys:
+      - {Authorization: "Bearer sk-first"}
+      - {Authorization: "Bearer sk-second"}
+    rateLimitPatterns:
+      - "rate_limit_exceeded"
+
+Fields:
+  keys — one object per key (at least 1, required). stdio: environment
+    variables for the upstream subprocess; http/sse: request headers merged
+    over the static headers. On rate-limit or transport error the pool closes
+    the current upstream and retries with the next key (~1-2s failover).
+  rateLimitPatterns — required (at least 1). Each entry must be a valid
+    regex, matched against tool error text. Only matching errors (plus
+    transport failures) retry; everything else is terminal. Use [".*"] for
+    blanket retry on read-only pools.
+  cooldownSeconds — seconds a rate-limited key is skipped (default: 300).
+  env / cwd — extra environment / working directory for stdio upstreams.
+  headers — extra static HTTP headers for http/sse upstreams.
+
+\${VAR} expansion: any string value may reference \${NAME}; values come from
+the environment, and an undefined reference is a configuration error.
+
+Tools are exposed as {pool}__{tool} (e.g. brave-search__brave_web_search).
+
+Serving modes (one line each):
+  (default)      stdio proxy: connects to the shared daemon for this config (spawns it if needed)
+  --local        standalone single-process server, no sharing
+  --http         Streamable HTTP endpoint at http://<host>:<port>/mcp (GET /health)
+  --daemon       internal: run as the shared daemon (requires --socket)
+
+Logs: JSON lines on stderr (stdout is reserved for the MCP protocol).
+Without --verbose only warn/error print; --verbose adds per-request trace logs.`;
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_HOST = "127.0.0.1";
@@ -62,6 +122,7 @@ const KNOWN_FLAG: Record<string, true> = {
 	"--local": true,
 	"--http": true,
 	"--help": true,
+	"--help-detailed": true,
 	"-h": true,
 	"--version": true,
 };
@@ -116,6 +177,10 @@ const cli = defineCommand({
 		},
 		http: { type: "boolean", description: "Streamable HTTP endpoint" },
 		help: { type: "boolean", description: "Show this help", alias: "h" },
+		helpDetailed: {
+			type: "boolean",
+			description: "Setup guide: config file, examples, modes, logs",
+		},
 		version: { type: "boolean", description: "Print version and exit" },
 	},
 	async run({ args, rawArgs }) {
@@ -130,6 +195,11 @@ const cli = defineCommand({
 
 		if (args.version) {
 			console.log(packageJson.version);
+			return;
+		}
+
+		if (args.helpDetailed) {
+			console.log(DETAILED_HELP);
 			return;
 		}
 

@@ -156,3 +156,59 @@ test.each(["--help", "-h"])("%s exits 0 without spawning a daemon", (flag) => {
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
+
+test("--help-detailed exits 0 with the setup guide and no daemon", () => {
+	const directory = mkdtempSync(join(tmpdir(), "mcp-pool-help-detailed-"));
+	const configFile = join(directory, "config.yaml");
+	writeFileSync(
+		configFile,
+		`pools:\n  main:\n    command: bun\n    args: ["run", "test/helper-server.ts"]\n    keys:\n      - {}\n`,
+	);
+	try {
+		const paths = runtimePaths(configFile);
+		const proc = Bun.spawnSync({
+			cmd: ["bun", "run", "src/index.ts", "--help-detailed", "--config", configFile],
+			stdout: "pipe",
+			stderr: "pipe",
+			cwd: join(import.meta.dir, ".."),
+		});
+		const out = proc.stdout.toString();
+		expect(proc.exitCode).toBe(0);
+		expect(out).toContain("setup guide");
+		expect(out).toContain("Config file");
+		expect(out).toContain("Minimal stdio pool");
+		expect(out).toContain("transport: http");
+		expect(out).toContain("rateLimitPatterns");
+		expect(out).toContain("cooldownSeconds");
+		expect(out).toContain("${VAR}");
+		expect(out).toContain("Serving modes");
+		expect(out).toContain("JSON lines on stderr");
+		expect(existsSync(paths.socket)).toBe(false);
+		expect(existsSync(paths.status)).toBe(false);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("--help-detailed needs no config file on disk", () => {
+	const directory = mkdtempSync(join(tmpdir(), "mcp-pool-help-detailed-noconfig-"));
+	try {
+		const proc = Bun.spawnSync({
+			cmd: [
+				"bun",
+				"run",
+				join(import.meta.dir, "..", "src", "index.ts"),
+				"--help-detailed",
+				"--config",
+				join(directory, "does-not-exist.yaml"),
+			],
+			stdout: "pipe",
+			stderr: "pipe",
+			cwd: directory,
+		});
+		expect(proc.exitCode).toBe(0);
+		expect(proc.stdout.toString()).toContain("setup guide");
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});

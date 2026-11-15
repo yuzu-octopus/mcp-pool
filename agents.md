@@ -8,7 +8,8 @@ MCP proxy that pools multiple API keys for rate-limited upstream MCP servers. Sp
 
 | File | Purpose |
 |---|---|
-| `src/index.ts` | MCP server entry — citty `defineCommand` parsing (`--config`/`--verbose`/`--version`, exit 2 on misuse), prefixes tools on `list`, strips prefix on `call`, starts all pools |
+| `src/index.ts` | MCP server entry — citty `defineCommand` parsing (`--config`/`--verbose`/`--help-detailed`/`--version`, exit 2 on misuse), prefixes tools on `list`, strips prefix on `call`, starts all pools |
+| `bin/mcp-pool.js` | Prebuilt-binary lookup shim: `$MCP_POOL_BINARY` override → platform package (`optionalDependencies`) → `node dist/index.js` fallback; `--rebuild` compiles the binary for the current platform in place and exits |
 | `src/pool.ts` | Pool class — lazy failover: `start()` tries each key until one connects (retries across all keys), `routeCall()` retries across keys on rate-limit, `spawnUpstream()` spawns on-demand + validates tool set consistency |
 | `src/config.ts` | YAML loading, Zod validation with regex check on `rateLimitPatterns`, `${VAR}` expansion |
 | `src/types.ts` | `PoolConfig`, `LogEvent` |
@@ -53,7 +54,7 @@ Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned
 - **`--daemon`**: detached process owning upstreams, one MCP `Server` per accepted connection. Exits when the last connection leaves, after `IDLE_GRACE_MS` (3s). `EADDRINUSE` means another daemon won the race — exits quietly.
 - **`--local`**: standalone single-process server, no sharing.
 - **`--http --port N [--host H]`**: per-request Server+transport over Streamable HTTP at `/mcp`, plus `GET /health`. Bun.serve when available, node:http fallback (`MCP_POOL_HTTP_NODE=1` forces node).
-- **`--help` / `-h`, `--version`**: print usage / version and exit 0 before config load or daemon spawn. Usage errors exit 2 (`mcp-pool: error: …`, no stack trace).
+- **`--help` / `-h`, `--help-detailed`, `--version`**: print usage / setup guide / version and exit 0 before config load or daemon spawn. Usage errors exit 2 (`mcp-pool: error: …`, no stack trace). (`--rebuild` is handled by the `bin/mcp-pool.js` shim, never reaches the CLI entry.)
 
 Runtime sockets live in `~/.mcp-pool/<sha256(configPath)[:16]>.sock`. **Not** `os.tmpdir()`: the SDK's stdio transport filters `TMPDIR` out of the child environment, which would give the daemon a different directory than the agent that spawned it. A `.status` file carries `ready` or the daemon's startup error so proxies fail fast.
 
@@ -62,10 +63,11 @@ Runtime sockets live in `~/.mcp-pool/<sha256(configPath)[:16]>.sock`. **Not** `o
 - **Lazy failover**: 1 process per pool at a time. On rate-limit, the current process is closed and a new one spawns with the next key. No warm standby processes.
 - **`rateLimitPatterns` safety gate**: without explicit patterns, all `isError` results are terminal. Use `[".*"]` for blanket retry on read-only pools.
 - **Per-key cooldown**: after a matching rate-limit error, that key is skipped for `cooldownSeconds` (300 seconds by default).
+- **Verbose-gated route logs**: without `--verbose` only `warn`/`error` print; per-request trace logs (route calls) emit only with `--verbose`.
 - **Tool set validation on each spawn**: when a new upstream spawns, its tools are compared against the cached set (by name→schema map, order-independent). Mismatch → error, logged before that upstream is used.
 - **Parallel pool startup**: `Promise.allSettled` starts all pools at once; any failure closes the ones that started and rethrows. Removes the head-of-line stall of a slow upstream.
 - **No persistent state**: everything resets on restart.
-- **Stdio upstreams only**: HTTP upstreams would need transport field + factory.
+- **Remote upstreams**: `http`/`sse` pools connect over Streamable HTTP/SSE with per-key header objects merged over the static `headers`; only stdio pools spawn subprocesses.
 - **Resource cleanup**: `spawnUpstream` cleans up client on connection/tool-list failure; tool mismatch also closes the client before throwing.
 
 ## Test structure
