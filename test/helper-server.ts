@@ -5,6 +5,8 @@
  *   TEST_TOOLS_JSON — JSON array of tools (default: echo tool)
  *   TEST_PROMPTS_JSON — JSON array of prompts (default: none; set TEST_NO_PROMPTS=1 to force none)
  *   TEST_NO_PROMPTS — if "1", offer no prompts capability at all
+ *   TEST_RESOURCES_JSON — JSON array of resources {uri, name, mimeType?} (default: none; set TEST_NO_RESOURCES=1 to force none)
+ *   TEST_NO_RESOURCES — if "1", offer no resources capability at all
  *   TEST_RATE_LIMIT_EVERY_N — return rate-limit error on every Nth call (default: 0 = never)
  *   TEST_RATE_LIMIT_COUNT — max rate-limited responses before returning success (0 = unlimited)
  *   TEST_CRASH_AFTER — crash after N tool calls (default: 0 = never)
@@ -30,7 +32,12 @@ import {
 	CallToolRequestSchema,
 	GetPromptRequestSchema,
 	ListPromptsRequestSchema,
+	ListResourceTemplatesRequestSchema,
+	ListResourcesRequestSchema,
 	ListToolsRequestSchema,
+	ReadResourceRequestSchema,
+	SubscribeRequestSchema,
+	UnsubscribeRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
 let callCount = 0;
@@ -77,6 +84,21 @@ function getPrompts(): Array<{
 	}
 }
 
+function getResources(): Array<{
+	uri: string;
+	name: string;
+	mimeType?: string;
+}> {
+	const raw = process.env.TEST_RESOURCES_JSON;
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
 const rateLimitEveryN = parseInt(
 	process.env.TEST_RATE_LIMIT_EVERY_N || "0",
 	10,
@@ -86,6 +108,7 @@ const crashAfter = parseInt(process.env.TEST_CRASH_AFTER || "0", 10);
 const errorText = process.env.TEST_TOOL_ERROR_TEXT || "rate_limit_exceeded";
 
 const offerPrompts = process.env.TEST_NO_PROMPTS !== "1";
+const offerResources = process.env.TEST_NO_RESOURCES !== "1";
 
 const server = new Server(
 	{ name: "test-helper-server", version: "0.1.0" },
@@ -93,6 +116,9 @@ const server = new Server(
 		capabilities: {
 			tools: {},
 			...(offerPrompts ? { prompts: { listChanged: true } } : {}),
+			...(offerResources
+				? { resources: { subscribe: true, listChanged: true } }
+				: {}),
 		},
 	},
 );
@@ -123,6 +149,53 @@ if (offerPrompts) {
 				},
 			],
 		};
+	});
+}
+
+if (offerResources) {
+	server.setRequestHandler(ListResourcesRequestSchema, async () => {
+		return { resources: getResources() };
+	});
+
+	server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+		return {
+			resourceTemplates: getResources().map((r) => ({
+				name: r.name,
+				uriTemplate: "exa://docs/{id}",
+			})),
+		};
+	});
+
+	server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+		const resource = getResources().find((r) => r.uri === request.params.uri);
+		if (!resource) {
+			throw new Error(`Unknown resource: "${request.params.uri}"`);
+		}
+		return {
+			contents: [
+				{
+					uri: resource.uri,
+					mimeType: resource.mimeType ?? "text/plain",
+					text: `hello from ${resource.name}`,
+				},
+			],
+		};
+	});
+
+	server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+		const resource = getResources().find((r) => r.uri === request.params.uri);
+		if (!resource) {
+			throw new Error(`Unknown resource: "${request.params.uri}"`);
+		}
+		return {};
+	});
+
+	server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+		const resource = getResources().find((r) => r.uri === request.params.uri);
+		if (!resource) {
+			throw new Error(`Unknown resource: "${request.params.uri}"`);
+		}
+		return {};
 	});
 }
 

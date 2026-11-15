@@ -3,7 +3,12 @@ import {
 	CallToolRequestSchema,
 	GetPromptRequestSchema,
 	ListPromptsRequestSchema,
+	ListResourceTemplatesRequestSchema,
+	ListResourcesRequestSchema,
 	ListToolsRequestSchema,
+	ReadResourceRequestSchema,
+	SubscribeRequestSchema,
+	UnsubscribeRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import packageJson from "../package.json" with { type: "json" };
 import { log } from "./logger.js";
@@ -50,6 +55,23 @@ function splitPrefix(
 	};
 }
 
+/** Seed the URI→pool map from each pool's cached lists (post-start). */
+function seedUriMap(
+	uriToPool: Map<string, Pool>,
+	pools: Pool[],
+): void {
+	for (const pool of pools) {
+		for (const resource of pool.getResources()) {
+			if (!uriToPool.has(resource.uri)) uriToPool.set(resource.uri, pool);
+		}
+		for (const template of pool.getResourceTemplates()) {
+			if (!uriToPool.has(template.uriTemplate)) {
+				uriToPool.set(template.uriTemplate, pool);
+			}
+		}
+	}
+}
+
 /**
  * Builds an MCP server bound to one set of pools. Callers create one of these
  * per connection so every client gets its own session over shared pools.
@@ -58,15 +80,31 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 	const hasPrompts = pools.some(
 		(pool) => pool.getUpstreamCapabilities()?.prompts !== undefined,
 	);
+	const hasResources = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.resources !== undefined,
+	);
 	const server = new Server(
 		{ name: "mcp-pool", version: packageJson.version },
 		{
 			capabilities: {
 				tools: {},
 				...(hasPrompts ? { prompts: { listChanged: true } } : {}),
+				...(hasResources
+					? { resources: { subscribe: true, listChanged: true } }
+					: {}),
 			},
 		},
 	);
+
+	// Per-build URI→pool map. Verbatim URIs: keyed by the exact upstream
+	// `uri`, so a collision across pools would silently pick one — a STOP
+	// condition per the plan, not something we paper over here.
+	const uriToPool = new Map<string, Pool>();
+	seedUriMap(uriToPool, pools);
+	function rebuildUriMap(): void {
+		uriToPool.clear();
+		seedUriMap(uriToPool, pools);
+	}
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => {
 		const tools: Array<{
@@ -196,6 +234,115 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 			}
 			return result;
 		});
+	}
+
+	if (hasResources) {
+		server.setRequestHandler(ListResourcesRequestSchema, async () => {
+			rebuildUriMap();
+			const resources: Array<{
+				name: string;
+				uri: string;
+				description?: string;
+				mimeType?: string;
+			}> = [];
+
+			for (const pool of pools) {
+				const prefix = `${pool.name}__`;
+				for (const resource of pool.getResources()) {
+					resources.push({
+						name: prefix + resource.name,
+						uri: resource.uri,
+						description: resource.description
+							? `[${pool.name}] ${resource.description}`
+							: `[${pool.name}]`,
+						mimeType: resource.mimeType,
+					});
+				}
+			}
+
+			return { resources };
+		});
+
+		server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+			rebuildUriMap();
+			const resourceTemplates: Array<{
+				name: string;
+				uriTemplate: string;
+				description?: string;
+				mimeType?: string;
+			}> = [];
+
+			for (const pool of pools) {
+				const prefix = `${pool.name}__`;
+				for (const template of pool.getResourceTemplates()) {
+					resourceTemplates.push({
+						name: prefix + template.name,
+						uriTemplate: template.uriTemplate,
+						description: template.description
+							? `[${pool.name}] ${template.description}`
+							: `[${pool.name}]`,
+						mimeType: template.mimeType,
+					});
+				}
+			}
+
+			return { resourceTemplates };
+		});
+
+		server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+			const pool = uriToPool.get(request.params.uri);
+			if (!pool) {
+				throw new Error(`Unknown resource: "${request.params.uri}"`);
+			}
+
+			log({
+				level: "info",
+				event: "route_resource",
+				pool: pool.name,
+				uri: request.params.uri,
+				upstream: -1,
+			});
+
+			const result = await pool.routeRead(request.params.uri);
+			if ("isError" in result && result.isError) {
+				throw new Error(result.content[0].text);
+			}
+			return result;
+		});
+
+		server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+			const pool = uriToPool.get(request.params.uri);
+			if (!pool) {
+				throw new Error(`Unknown resource: "${request.params.uri}"`);
+			}
+
+			const err = await pool.routeSubscribe(request.params.uri);
+			if (err) {
+				throw new Error(err.content[0].text);
+			}
+			return {};
+		});
+
+		server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+			const pool =
+				uriToPool.get(request.params.uri) ?? findUriPool(request.params.uri);
+			if (!pool) {
+				throw new Error(`Unknown resource: "${request.params.uri}"`);
+			}
+
+			const err = await pool.routeUnsubscribe(request.params.uri);
+			if (err) {
+				throw new Error(err.content[0].text);
+			}
+			return {};
+		});
+	}
+
+	function findUriPool(uri: string): Pool | undefined {
+		for (const pool of pools) {
+			if (pool.resolvePoolForUri(uri)) return pool;
+		}
+		return undefined;
 	}
 
 	return server;

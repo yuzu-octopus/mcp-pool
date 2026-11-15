@@ -8,21 +8,22 @@ import type { PoolConfig } from "./types.js";
 
 function poolConfig(
 	poolName: string,
-	prompts: unknown,
-	extraEnv: Record<string, string> = {},
+	env: Record<string, string>,
 ): PoolConfig {
 	return {
 		command: "bun",
 		args: ["run", "test/helper-server.ts"],
-		keys: [
-			{
-				KEY: poolName,
-				TEST_PROMPTS_JSON: JSON.stringify(prompts),
-				...extraEnv,
-			},
-		],
+		keys: [{ KEY: poolName, ...env }],
 		rateLimitPatterns: ["rate_limit_exceeded"],
 	};
+}
+
+function promptsEnv(prompts: unknown): Record<string, string> {
+	return { TEST_PROMPTS_JSON: JSON.stringify(prompts) };
+}
+
+function resourcesEnv(resources: unknown): Record<string, string> {
+	return { TEST_RESOURCES_JSON: JSON.stringify(resources) };
 }
 
 const SUMMARIZE = [
@@ -32,6 +33,7 @@ const SUMMARIZE = [
 		arguments: [{ name: "text", description: "Text", required: true }],
 	},
 ];
+
 const TRANSLATE = [
 	{
 		name: "translate",
@@ -39,6 +41,9 @@ const TRANSLATE = [
 		arguments: [{ name: "text", description: "Text", required: true }],
 	},
 ];
+
+const RES_A = [{ uri: "exa://doc-1", name: "doc", mimeType: "text/plain" }];
+const RES_B = [{ uri: "fire://item-9", name: "item", mimeType: "text/plain" }];
 
 async function startClient(
 	pools: Pool[],
@@ -74,10 +79,165 @@ function assertErrorResult(v: unknown): asserts v is {
 	}
 }
 
+describe("resources passthrough", () => {
+	test("resources/list shows prefixed names and verbatim URIs", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		const beta = new Pool("beta", poolConfig("beta", resourcesEnv(RES_B)));
+		await alpha.start();
+		await beta.start();
+		const { client, server } = await startClient([alpha, beta]);
+		try {
+			expect(client.getServerCapabilities()?.resources).toEqual({
+				subscribe: true,
+				listChanged: true,
+			});
+			const result = await client.listResources();
+			const byName: Record<string, string> = {};
+			for (const r of result.resources) byName[r.name] = r.uri;
+			expect(byName["alpha__doc"]).toBe("exa://doc-1");
+			expect(byName["beta__item"]).toBe("fire://item-9");
+		} finally {
+			await closeAll([alpha, beta], client, server);
+		}
+	});
+
+	test("templates/list prefixes name and keeps uriTemplate verbatim", async () => {
+		const alpha = new Pool(
+			"alpha",
+			poolConfig("alpha", resourcesEnv([{ uri: "exa://x", name: "x" }])),
+		);
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			const templates = await client.listResourceTemplates();
+			expect(templates.resourceTemplates.length).toBeGreaterThan(0);
+			expect(templates.resourceTemplates[0].name).toBe("alpha__x");
+			expect(templates.resourceTemplates[0].uriTemplate).toBe(
+				"exa://docs/{id}",
+			);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("resources/read routes via URI map, verbatim URI upstream", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			const result = await client.readResource({ uri: "exa://doc-1" });
+			const text = JSON.stringify(result.contents);
+			expect(text).toContain("exa://doc-1");
+			expect(text).toContain("hello from doc");
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("resources/read routes to the pool that owns the URI", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		const beta = new Pool("beta", poolConfig("beta", resourcesEnv(RES_B)));
+		await alpha.start();
+		await beta.start();
+		const { client, server } = await startClient([alpha, beta]);
+		try {
+			const fromAlpha = await client.readResource({ uri: "exa://doc-1" });
+			expect(JSON.stringify(fromAlpha.contents)).toContain("hello from doc");
+			const fromBeta = await client.readResource({ uri: "fire://item-9" });
+			expect(JSON.stringify(fromBeta.contents)).toContain("hello from item");
+		} finally {
+			await closeAll([alpha, beta], client, server);
+		}
+	});
+
+	test("unknown URI read errors", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			await expect(
+				client.readResource({ uri: "exa://nope" }),
+			).rejects.toThrow(/Unknown resource/);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("subscribe/unsubscribe round-trip", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			await client.subscribeResource({ uri: "exa://doc-1" });
+			await client.unsubscribeResource({ uri: "exa://doc-1" });
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("subscribe to unknown URI errors", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", resourcesEnv(RES_A)));
+		await alpha.start();
+		const { client, server } = await startClient([alpha]);
+		try {
+			await expect(
+				client.subscribeResource({ uri: "exa://nope" }),
+			).rejects.toThrow(/Unknown resource/);
+		} finally {
+			await closeAll([alpha], client, server);
+		}
+	});
+
+	test("resources capability absent when no pool offers resources", async () => {
+		const plain = new Pool(
+			"plain",
+			poolConfig("plain", {
+				...promptsEnv([]),
+				TEST_NO_RESOURCES: "1",
+			}),
+		);
+		await plain.start();
+		expect(plain.getResources()).toEqual([]);
+		const { client, server } = await startClient([plain]);
+		try {
+			expect(client.getServerCapabilities()?.resources).toBeUndefined();
+		} finally {
+			await closeAll([plain], client, server);
+		}
+	});
+
+	test("resource cache mismatch on failover surfaces error", async () => {
+		const pool = new Pool("test", {
+			command: "bun",
+			args: ["run", "test/helper-server.ts"],
+			keys: [
+				{ KEY: "a", TEST_RESOURCES_JSON: JSON.stringify(RES_A) },
+				{ KEY: "b", TEST_RESOURCES_JSON: JSON.stringify(RES_B) },
+			],
+			rateLimitPatterns: ["rate_limit_exceeded"],
+		});
+		await pool.start();
+		expect(pool.getResources().map((r) => r.uri)).toEqual(["exa://doc-1"]);
+		// Unknown URI read throws, forcing failover onto key1, whose divergent
+		// resources must be rejected by mismatch validation.
+		const result = await pool.routeRead("exa://unknown");
+		assertErrorResult(result);
+		expect(result.isError).toBe(true);
+		expect(pool.getResources().map((r) => r.uri)).toEqual(["exa://doc-1"]);
+		await pool.close();
+	});
+});
+
 describe("prompts passthrough", () => {
 	test("prompts/list shows pool__ names from two pools", async () => {
-		const alpha = new Pool("alpha", poolConfig("alpha", SUMMARIZE));
-		const beta = new Pool("beta", poolConfig("beta", TRANSLATE));
+		const alpha = new Pool(
+			"alpha",
+			poolConfig("alpha", promptsEnv(SUMMARIZE)),
+		);
+		const beta = new Pool(
+			"beta",
+			poolConfig("beta", promptsEnv(TRANSLATE)),
+		);
 		await alpha.start();
 		await beta.start();
 		const { client, server } = await startClient([alpha, beta]);
@@ -98,7 +258,7 @@ describe("prompts passthrough", () => {
 	});
 
 	test("prompts/get routes by prefix", async () => {
-		const alpha = new Pool("alpha", poolConfig("alpha", SUMMARIZE));
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
 		await alpha.start();
 		const { client, server } = await startClient([alpha]);
 		try {
@@ -115,7 +275,7 @@ describe("prompts passthrough", () => {
 	});
 
 	test("unknown pool in prompt name errors", async () => {
-		const alpha = new Pool("alpha", poolConfig("alpha", SUMMARIZE));
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
 		await alpha.start();
 		const { client, server } = await startClient([alpha]);
 		try {
@@ -128,7 +288,7 @@ describe("prompts passthrough", () => {
 	});
 
 	test("unknown prompt in known pool errors", async () => {
-		const alpha = new Pool("alpha", poolConfig("alpha", SUMMARIZE));
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
 		await alpha.start();
 		const { client, server } = await startClient([alpha]);
 		try {
@@ -141,7 +301,7 @@ describe("prompts passthrough", () => {
 	});
 
 	test("missing separator errors", async () => {
-		const alpha = new Pool("alpha", poolConfig("alpha", SUMMARIZE));
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
 		await alpha.start();
 		const { client, server } = await startClient([alpha]);
 		try {
@@ -154,10 +314,7 @@ describe("prompts passthrough", () => {
 	});
 
 	test("prompts capability absent when no pool offers prompts", async () => {
-		const plain = new Pool(
-			"plain",
-			poolConfig("plain", SUMMARIZE, { TEST_NO_PROMPTS: "1" }),
-		);
+		const plain = new Pool("plain", poolConfig("plain", { TEST_NO_PROMPTS: "1" }));
 		await plain.start();
 		expect(plain.getPrompts()).toEqual([]);
 		const { client, server } = await startClient([plain]);

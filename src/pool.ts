@@ -2,6 +2,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type {
 	Prompt,
+	Resource,
+	ResourceTemplate,
 	ServerCapabilities,
 	Tool,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -21,7 +23,11 @@ type PromptResult = {
 	description?: string;
 };
 
-type PromptError = {
+type ReadResult = {
+	contents: Array<unknown>;
+};
+
+type RouteError = {
 	content: Array<{ type: "text"; text: string }>;
 	isError: boolean;
 };
@@ -35,6 +41,8 @@ export class Pool {
 	private client?: Client;
 	private cachedTools: Tool[] = [];
 	private cachedPrompts: Prompt[] = [];
+	private cachedResources: Resource[] = [];
+	private cachedTemplates: ResourceTemplate[] = [];
 	private upstreamCapabilities?: ServerCapabilities;
 	private started = false;
 	private routeLock: Promise<void> = Promise.resolve();
@@ -136,7 +144,7 @@ export class Pool {
 	async routePrompt(
 		promptName: string,
 		args?: Record<string, string>,
-	): Promise<PromptResult | PromptError> {
+	): Promise<PromptResult | RouteError> {
 		if (!this.started) {
 			return {
 				content: [
@@ -166,15 +174,95 @@ export class Pool {
 			}
 		}
 
-		return {
-			content: [
-				{
-					type: "text" as const,
-					text: `All ${maxKeys} keys for '${this.name}' failed to connect or are unavailable.`,
-				},
-			],
-			isError: true,
-		};
+		return unavailableError(this.name, maxKeys);
+	}
+
+	async routeRead(uri: string): Promise<ReadResult | RouteError> {
+		if (!this.started) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Pool "${this.name}" not started`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		const maxKeys = this.config.keys.length;
+		for (let attempt = 0; attempt < maxKeys; attempt++) {
+			const prepared = await this.withSwap(() => this.prepareNext());
+			if (prepared.kind === "skip") continue;
+
+			try {
+				const result = await prepared.client.readResource({ uri });
+				return result as ReadResult;
+			} catch (err) {
+				// Reads are not rate-limited: fail over once, then error.
+				await this.withSwap(() => this.markFailed(err));
+			}
+		}
+
+		return unavailableError(this.name, maxKeys);
+	}
+
+	async routeSubscribe(uri: string): Promise<RouteError | null> {
+		if (!this.started) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Pool "${this.name}" not started`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		const maxKeys = this.config.keys.length;
+		for (let attempt = 0; attempt < maxKeys; attempt++) {
+			const prepared = await this.withSwap(() => this.prepareNext());
+			if (prepared.kind === "skip") continue;
+
+			try {
+				await prepared.client.subscribeResource({ uri });
+				return null;
+			} catch (err) {
+				await this.withSwap(() => this.markFailed(err));
+			}
+		}
+
+		return unavailableError(this.name, maxKeys);
+	}
+
+	async routeUnsubscribe(uri: string): Promise<RouteError | null> {
+		if (!this.started) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Pool "${this.name}" not started`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		const maxKeys = this.config.keys.length;
+		for (let attempt = 0; attempt < maxKeys; attempt++) {
+			const prepared = await this.withSwap(() => this.prepareNext());
+			if (prepared.kind === "skip") continue;
+
+			try {
+				await prepared.client.unsubscribeResource({ uri });
+				return null;
+			} catch (err) {
+				await this.withSwap(() => this.markFailed(err));
+			}
+		}
+
+		return unavailableError(this.name, maxKeys);
 	}
 
 	/**
@@ -303,8 +391,27 @@ export class Pool {
 		return this.cachedPrompts;
 	}
 
+	getResources(): Resource[] {
+		return this.cachedResources;
+	}
+
+	getResourceTemplates(): ResourceTemplate[] {
+		return this.cachedTemplates;
+	}
+
 	getUpstreamCapabilities(): ServerCapabilities | undefined {
 		return this.upstreamCapabilities;
+	}
+
+	/**
+	 * Per-pool URI→pool lookup. Slice 2 fills the map at list time; slice 3
+	 * moves resolution here so completion routing shares it.
+	 */
+	resolvePoolForUri(uri: string): Pool | undefined {
+		return this.cachedResources.some((r) => r.uri === uri) ||
+			this.cachedTemplates.some((t) => t.uriTemplate === uri)
+			? this
+			: undefined;
 	}
 
 	async close(): Promise<void> {
@@ -343,20 +450,35 @@ export class Pool {
 
 		let tools: Tool[];
 		let prompts: Prompt[] = [];
+		let resources: Resource[] = [];
+		let templates: ResourceTemplate[] = [];
 		try {
 			const handshake = await Promise.race([
 				client.connect(transport).then(async () => {
 					const caps = client.getServerCapabilities();
-					const [toolRes, promptRes] = await Promise.all([
+					const [toolRes, promptRes, resRes, tmplRes] = await Promise.all([
 						client.listTools(),
 						caps?.prompts ? client.listPrompts().catch(() => null) : null,
+						caps?.resources ? client.listResources().catch(() => null) : null,
+						caps?.resources
+							? client.listResourceTemplates().catch(() => null)
+							: null,
 					]);
-					return { tools: toolRes, prompts: promptRes, caps };
+					return {
+						tools: toolRes,
+						prompts: promptRes,
+						resources: resRes,
+						templates: tmplRes,
+						caps,
+					};
 				}),
 				timeout,
 			]);
 			tools = (handshake.tools?.tools ?? []) as Tool[];
 			prompts = (handshake.prompts?.prompts ?? []) as Prompt[];
+			resources = (handshake.resources?.resources ?? []) as Resource[];
+			templates = (handshake.templates?.resourceTemplates ??
+				[]) as ResourceTemplate[];
 			this.upstreamCapabilities = handshake.caps;
 		} catch (err) {
 			await client.close().catch(() => {});
@@ -389,6 +511,30 @@ export class Pool {
 			this.cachedPrompts = prompts;
 		}
 
+		if (this.cachedResources.length > 0) {
+			const mismatch = findResourceMismatch(this.cachedResources, resources);
+			if (mismatch) {
+				await client.close();
+				throw new Error(
+					`Pool "${this.name}" key ${keyIndex} resources mismatch: ${mismatch}`,
+				);
+			}
+		} else {
+			this.cachedResources = resources;
+		}
+
+		if (this.cachedTemplates.length > 0) {
+			const mismatch = findTemplateMismatch(this.cachedTemplates, templates);
+			if (mismatch) {
+				await client.close();
+				throw new Error(
+					`Pool "${this.name}" key ${keyIndex} resource templates mismatch: ${mismatch}`,
+				);
+			}
+		} else {
+			this.cachedTemplates = templates;
+		}
+
 		this.client = client;
 		this.cursor = keyIndex;
 
@@ -406,6 +552,18 @@ export class Pool {
 			this.client = undefined;
 		}
 	}
+}
+
+function unavailableError(poolName: string, maxKeys: number): RouteError {
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `All ${maxKeys} keys for '${poolName}' failed to connect or are unavailable.`,
+			},
+		],
+		isError: true,
+	};
 }
 
 function findToolMismatch(a: Tool[], b: Tool[]): string | null {
@@ -448,6 +606,51 @@ function findPromptMismatch(a: Prompt[], b: Prompt[]): string | null {
 		const argsB = JSON.stringify(promptB.arguments ?? []);
 		if (argsA !== argsB) {
 			return `prompt "${name}" arguments mismatch`;
+		}
+	}
+
+	return null;
+}
+
+function findResourceMismatch(a: Resource[], b: Resource[]): string | null {
+	const mapA = new Map(a.map((r) => [r.uri, r]));
+	const mapB = new Map(b.map((r) => [r.uri, r]));
+
+	if (mapA.size !== mapB.size) {
+		return `resource count mismatch: ${mapA.size} vs ${mapB.size}`;
+	}
+
+	for (const [uri, resA] of mapA) {
+		const resB = mapB.get(uri);
+		if (!resB) {
+			return `resource "${uri}" missing from upstream`;
+		}
+		if (resA.name !== resB.name || resA.mimeType !== resB.mimeType) {
+			return `resource "${uri}" metadata mismatch`;
+		}
+	}
+
+	return null;
+}
+
+function findTemplateMismatch(
+	a: ResourceTemplate[],
+	b: ResourceTemplate[],
+): string | null {
+	const mapA = new Map(a.map((t) => [t.uriTemplate, t]));
+	const mapB = new Map(b.map((t) => [t.uriTemplate, t]));
+
+	if (mapA.size !== mapB.size) {
+		return `resource template count mismatch: ${mapA.size} vs ${mapB.size}`;
+	}
+
+	for (const [uriTemplate, tmplA] of mapA) {
+		const tmplB = mapB.get(uriTemplate);
+		if (!tmplB) {
+			return `resource template "${uriTemplate}" missing from upstream`;
+		}
+		if (tmplA.name !== tmplB.name) {
+			return `resource template "${uriTemplate}" name mismatch`;
 		}
 	}
 

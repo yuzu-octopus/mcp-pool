@@ -35,6 +35,13 @@ export type LogEvent =
 			upstream: number;
 	  }
 	| {
+			level: "info";
+			event: "route_resource";
+			pool: string;
+			uri: string;
+			upstream: number;
+	  }
+	| {
 			level: "warn";
 			event: "rate_limited";
 			pool: string;
