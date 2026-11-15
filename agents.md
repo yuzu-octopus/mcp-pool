@@ -30,7 +30,7 @@ pools:
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
 
-Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned `bunx -y <pkg>` refloats on every fresh cache. Verified 2026-11-15: `tavily-mcp@0.2.22`, `exa-mcp-server@3.4.3`, `firecrawl-mcp@3.40.0`, `@brave/brave-search-mcp-server@2.1.4`.
+Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned `bunx -y <pkg>` refloats on every fresh cache. Verified 2026-11-15: `tavily-mcp@0.2.22`, `exa-mcp-server@3.4.3`, `firecrawl-mcp@3.40.0`, `@brave/brave-search-mcp-server@2.1.4` (brave needs an API key even to list tools).
 
 ## Flow
 
