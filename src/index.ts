@@ -209,15 +209,27 @@ async function runHttp(
 	host: string,
 ): Promise<void> {
 	const pools = await startPools(loaded.config.pools);
-	const transport = new StreamableHTTPServerTransport({
-		sessionIdGenerator: undefined,
-	});
-	await buildServer(pools, verbose).connect(transport);
 
 	const http = createHttpServer((req, res) => {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		if (req.method === "POST" && url.pathname === "/mcp") {
-			void transport.handleRequest(req, res);
+			const server = buildServer(pools, verbose);
+			const transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: undefined,
+			});
+			void server
+				.connect(transport)
+				.then(() => transport.handleRequest(req, res))
+				.catch((err: unknown) => {
+					res.writeHead(500, { "content-type": "application/json" });
+					res.end(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							error: { code: -32000, message: String(err) },
+							id: null,
+						}),
+					);
+				});
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/health") {
@@ -233,6 +245,7 @@ async function runHttp(
 
 	await new Promise<void>((resolve) => http.listen(port, host, resolve));
 	log({ level: "info", event: "upstream_start", pool: "http", keyIndex: 0 });
+	console.error(`mcp-pool http listening on ${host}:${port}`);
 
 	const shutdown = () => {
 		http.close();
