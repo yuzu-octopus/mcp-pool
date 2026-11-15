@@ -5,6 +5,7 @@ import { createServer, type Server as NetServer } from "node:net";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { defineCommand, runCommand } from "citty";
 import packageJson from "../package.json" with { type: "json" };
 import type { LoadedConfig } from "./config.js";
 import { ConfigError, loadConfig } from "./config.js";
@@ -23,17 +24,7 @@ import type { Pool } from "./pool.js";
 import { buildServer, startPools } from "./server.js";
 import { SocketTransport } from "./socket-transport.js";
 
-interface Options {
-	config?: string;
-	verbose: boolean;
-	daemon: boolean;
-	local: boolean;
-	http: boolean;
-	port: number;
-	host: string;
-	socket?: string;
-	help: boolean;
-}
+class UsageError extends Error {}
 
 const USAGE = `mcp-pool — MCP Key Pool Proxy (v${packageJson.version})
 
@@ -51,40 +42,127 @@ Options:
   --port <n>       HTTP port (default: 3000, with --http)
   --host <h>       HTTP host (default: 127.0.0.1, with --http)
   --verbose        Per-request trace logs (JSON lines on stderr)
-  --help, -h       Show this help`;
+  --help, -h       Show this help
+  --version        Print version and exit`;
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_HOST = "127.0.0.1";
 
-function parseArgs(): Options {
-	const argv = process.argv.slice(2);
-	const options: Options = {
-		verbose: false,
-		daemon: false,
-		local: false,
-		http: false,
-		port: DEFAULT_PORT,
-		host: DEFAULT_HOST,
-		help: false,
-	};
-
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		if (arg === "--config") options.config = argv[++i];
-		else if (arg === "--socket") options.socket = argv[++i];
-		else if (arg === "--port") options.port = Number(argv[++i]);
-		else if (arg === "--host") options.host = argv[++i];
-		else if (arg === "--verbose") options.verbose = true;
-		else if (arg === "--daemon") options.daemon = true;
-		else if (arg === "--local") options.local = true;
-		else if (arg === "--http") options.http = true;
-		else if (arg === "--help" || arg === "-h") options.help = true;
-		else throw new Error(`unknown argument: ${arg}`);
+// citty parses non-strict (unknown flags are ignored), so reject anything
+// outside the known flag set to keep the old hand-rolled parser's behavior.
+const TAKES_VALUE: Record<string, true> = {
+	"--config": true,
+	"--socket": true,
+	"--port": true,
+	"--host": true,
+};
+const KNOWN_FLAG: Record<string, true> = {
+	"--verbose": true,
+	"--daemon": true,
+	"--local": true,
+	"--http": true,
+	"--help": true,
+	"-h": true,
+	"--version": true,
+};
+function scanRawArgs(rawArgs: string[]): void {
+	for (let i = 0; i < rawArgs.length; i++) {
+		const arg = rawArgs[i];
+		const name = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
+		if (TAKES_VALUE[name]) {
+			if (!arg.includes("=")) i++;
+			continue;
+		}
+		if (KNOWN_FLAG[arg]) continue;
+		throw new UsageError(`unknown argument: ${arg}`);
 	}
-
-	if (Number.isNaN(options.port)) throw new Error("--port requires a number");
-	return options;
 }
+
+const cli = defineCommand({
+	meta: {
+		name: "mcp-pool",
+		version: packageJson.version,
+		description:
+			"MCP Key Pool Proxy — pool multiple API keys across upstream MCP servers",
+	},
+	args: {
+		config: {
+			type: "string",
+			description:
+				"Config file (default search: ./mcp-pool.yaml, ./.mcp-pool.yaml, ~/.config/mcp-pool/mcp-pool.yaml)",
+		},
+		socket: { type: "string", description: "Daemon socket (with --daemon)" },
+		port: {
+			type: "string",
+			description: "HTTP port (with --http)",
+			default: String(DEFAULT_PORT),
+		},
+		host: {
+			type: "string",
+			description: "HTTP host (with --http)",
+			default: DEFAULT_HOST,
+		},
+		verbose: {
+			type: "boolean",
+			description: "Per-request trace logs (JSON lines on stderr)",
+		},
+		daemon: {
+			type: "boolean",
+			description: "Internal: run as the shared daemon (requires --socket)",
+		},
+		local: {
+			type: "boolean",
+			description: "Standalone single-process server, no sharing",
+		},
+		http: { type: "boolean", description: "Streamable HTTP endpoint" },
+		help: { type: "boolean", description: "Show this help", alias: "h" },
+		version: { type: "boolean", description: "Print version and exit" },
+	},
+	async run({ args, rawArgs }) {
+		scanRawArgs(rawArgs);
+		const port = Number(args.port);
+		if (Number.isNaN(port)) throw new UsageError("--port requires a number");
+
+		if (args.help) {
+			console.log(USAGE);
+			return;
+		}
+
+		if (args.version) {
+			console.log(packageJson.version);
+			return;
+		}
+
+		const verbose = args.verbose ?? false;
+
+		if (args.daemon) {
+			process.title = "mcp-pool daemon";
+			if (!args.socket) throw new UsageError("--daemon requires --socket");
+			await runDaemon(
+				loadOrExit(args.config),
+				verbose,
+				runtimePathsForSocket(args.socket),
+			);
+			return;
+		}
+
+		const loaded = loadOrExit(args.config);
+
+		if (args.http) {
+			process.title = "mcp-pool http";
+			await runHttp(loaded, verbose, port, args.host);
+			return;
+		}
+
+		if (args.local) {
+			process.title = "mcp-pool local";
+			await runLocal(loaded, verbose);
+			return;
+		}
+
+		await runProxy(loaded, verbose);
+	},
+});
 
 function loadOrExit(path: string | undefined): LoadedConfig {
 	try {
@@ -390,36 +468,16 @@ async function runNodeHttp(
 }
 
 async function main(): Promise<void> {
-	const options = parseArgs();
-
-	if (options.help) {
-		console.log(USAGE);
-		return;
+	process.title = "mcp-pool";
+	try {
+		await runCommand(cli, { rawArgs: process.argv.slice(2) });
+	} catch (err) {
+		if (err instanceof UsageError) {
+			console.error(`mcp-pool: error: ${err.message}\n\n${USAGE}`);
+			process.exit(2);
+		}
+		throw err;
 	}
-
-	if (options.daemon) {
-		if (!options.socket) throw new Error("--daemon requires --socket");
-		await runDaemon(
-			loadOrExit(options.config),
-			options.verbose,
-			runtimePathsForSocket(options.socket),
-		);
-		return;
-	}
-
-	const loaded = loadOrExit(options.config);
-
-	if (options.http) {
-		await runHttp(loaded, options.verbose, options.port, options.host);
-		return;
-	}
-
-	if (options.local) {
-		await runLocal(loaded, options.verbose);
-		return;
-	}
-
-	await runProxy(loaded, options.verbose);
 }
 
 main().catch((err) => {
