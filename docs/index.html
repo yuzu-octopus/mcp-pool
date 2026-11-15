@@ -1091,7 +1091,7 @@ cat &gt; ~/.config/mcp-pool/mcp-pool.yaml &lt;&lt; &#39;EOF&#39;
 pools:
   brave-search:
     command: bunx
-    args: [&#34;-y&#34;, &#34;@brave/brave-search-mcp-server&#34;]
+    args: [&#34;-y&#34;, &#34;@brave/brave-search-mcp-server@2.1.4&#34;]
     keys:
       - {BRAVE_API_KEY: &#34;${BRAVE_API_KEY_1}&#34;}
       - {BRAVE_API_KEY: &#34;${BRAVE_API_KEY_2}&#34;}
@@ -1102,6 +1102,7 @@ EOF
 
 # Run it
 bunx mcp-pool
+# Install builds a compiled binary via postinstall; invocation is unchanged.
 </code></pre>
       
 
