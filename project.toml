@@ -68,7 +68,7 @@ cat > ~/.config/mcp-pool/mcp-pool.yaml << 'EOF'
 pools:
   brave-search:
     command: bunx
-    args: ["-y", "@brave/brave-search-mcp-server"]
+    args: ["-y", "@brave/brave-search-mcp-server@2.1.4"]
     keys:
       - {BRAVE_API_KEY: "${BRAVE_API_KEY_1}"}
       - {BRAVE_API_KEY: "${BRAVE_API_KEY_2}"}

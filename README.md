@@ -27,7 +27,7 @@ Runtime state lives in `~/.mcp-pool/`, not `/tmp`, so the path is stable regardl
 pools:
   brave-search:
     command: bunx
-    args: ["-y", "@brave/brave-search-mcp-server"]
+    args: ["-y", "@brave/brave-search-mcp-server@2.1.4"]
     keys:
       - {BRAVE_API_KEY: "sk-first"}
       - {BRAVE_API_KEY: "sk-second"}
@@ -35,6 +35,8 @@ pools:
       - "rate_limit_exceeded"
       - "too many requests"
 ```
+
+Pin upstream versions for reproducible cold starts: `args: ["-y", "firecrawl-mcp@3.40.0"]`. An unpinned `bunx -y <pkg>` refloats on every fresh cache, while a `pkg@x.y.z` pin freezes resolution to one cache entry. Verified 2026-11-15 against the local bun cache: `tavily-mcp@0.2.22` (5 tools), `exa-mcp-server@3.4.3` (2 tools), `firecrawl-mcp@3.40.0` (28 tools), `@brave/brave-search-mcp-server@2.1.4` (8 tools; requires an API key even to list tools).
 
 | Field | Description |
 |---|---|

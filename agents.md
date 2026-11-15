@@ -30,6 +30,8 @@ pools:
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
 
+Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned `bunx -y <pkg>` refloats on every fresh cache. Verified 2026-11-15: `tavily-mcp@0.2.22`, `exa-mcp-server@3.4.3`, `firecrawl-mcp@3.40.0`, `@brave/brave-search-mcp-server@2.1.4`.
+
 ## Flow
 
 1. `loadConfig()` reads YAML, expands `${VAR}` env refs (missing variables are errors), then validates with Zod
