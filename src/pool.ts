@@ -75,11 +75,17 @@ export class Pool {
 	private started = false;
 	private routeLock: Promise<void> = Promise.resolve();
 	private cooldowns: number[] = [];
+	private rateLimitRes: RegExp[];
+	private transientErrorRes: RegExp[] | undefined;
 
 	constructor(name: string, config: PoolConfig) {
 		this.name = name;
 		this.config = config;
 		this.cooldowns = config.keys.map(() => 0);
+		this.rateLimitRes = config.rateLimitPatterns.map((p) => new RegExp(p));
+		this.transientErrorRes = config.transientRetry?.errorPatterns.map(
+			(p) => new RegExp(p),
+		);
 	}
 
 	async start(): Promise<void> {
@@ -147,11 +153,8 @@ export class Pool {
 					args,
 				);
 
-				if (
-					result.isError ||
-					UNFLAGGED_ERROR_PREFIX.test(stringifyContent(result.content))
-				) {
-					const errorText = stringifyContent(result.content);
+				const errorText = stringifyContent(result.content);
+				if (result.isError || UNFLAGGED_ERROR_PREFIX.test(errorText)) {
 					if (this.matchesRateLimit(errorText)) {
 						await this.withSwap(() =>
 							this.markRateLimited(cooldownSec, prepared),
@@ -195,12 +198,8 @@ export class Pool {
 				!result.isError ||
 				!policy?.tools.includes(toolName) ||
 				attempt >= policy.delaysMs.length ||
-				this.config.rateLimitPatterns.some((pattern) =>
-					new RegExp(pattern).test(errorText),
-				) ||
-				!policy.errorPatterns.some((pattern) =>
-					new RegExp(pattern).test(errorText),
-				)
+				this.rateLimitRes.some((re) => re.test(errorText)) ||
+				!this.transientErrorRes?.some((re) => re.test(errorText))
 			)
 				return result;
 
@@ -589,9 +588,7 @@ export class Pool {
 	}
 
 	private matchesRateLimit(text: string): boolean {
-		return this.config.rateLimitPatterns.some((pat) =>
-			new RegExp(pat).test(text),
-		);
+		return this.rateLimitRes.some((re) => re.test(text));
 	}
 
 	private createTransport(keyEntry: Record<string, string>): Transport {

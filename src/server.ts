@@ -176,13 +176,15 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 			};
 		}
 
-		log({
-			level: "info",
-			event: "route",
-			pool: split.poolName,
-			tool: split.short,
-			upstream: -1,
-		});
+		if (verbose) {
+			log({
+				level: "info",
+				event: "route",
+				pool: split.poolName,
+				tool: split.short,
+				upstream: -1,
+			});
+		}
 
 		return (await pool.routeCall(
 			split.short,
