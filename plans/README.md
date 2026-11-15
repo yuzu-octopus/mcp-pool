@@ -21,6 +21,7 @@ regenerates from `project.toml`); never write outside the repo except `/tmp`.
 | 005 | Serve `--http` on `Bun.serve` instead of `node:http` | P3 | S | 001 | DONE (worktree /tmp/mcp-pool-005, branch advisor/005-bun-serve-http, commits ea51f00+a3717e4; reviewer-verified gate + 5x http test; gap: 15s slow-stream probe skipped, no reset observed) |
 | 006 | Full MCP passthrough (prompts, resources, completions, logging) | P1 | M | — (merge after 001–005) | DONE (merged to main; reviewer-verified gate + review fixes) |
 | 007 | Port upstream PR #1 — failover ownership, transient retries, HTTP/SSE upstreams | P1 | M | 006 | DONE (worktree /tmp/mcp-pool-007, branch advisor/007-port-upstream-pr, commits 8590077+33622ef+e96e160 merged as ac886db; reviewer-verified gate; Co-authored-by trailers) |
+| 008 | Prebuilt per-platform binaries via optionalDependencies | P2 | M | 004 | TODO (plan written; executor: read plans/008-prebuilt-binaries.md fully, drift-check vs 3558e91 first) |
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale — finding fixed independently or approach abandoned)
 
 ## Merge constraints (verified 2026-11-15 by resource analyst + orchestrator probes)
