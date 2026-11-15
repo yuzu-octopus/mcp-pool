@@ -1,5 +1,9 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type {
 	CompleteRequest,
 	LoggingLevel,
@@ -49,7 +53,13 @@ type CompleteResult = {
 
 export type ListChangedKind = "tools" | "prompts" | "resources";
 
-type Prepared = { kind: "call"; client: Client } | { kind: "skip" };
+type PreparedCall = { kind: "call"; client: Client; keyIndex: number };
+type Prepared = PreparedCall | { kind: "skip" };
+
+// Context7 and ScrapingAnt sometimes return auth/quota failures without MCP's isError flag.
+// Match only known error prefixes; ordinary documentation remains untouched.
+const UNFLAGGED_ERROR_PREFIX =
+	/^(?:Invalid API key\b|Monthly quota reached\b|Rate limited or quota exceeded\b|Rate limit exceeded\b|Spending limit\b|Budget exceeded\b|Credits exhausted\b|Payment required\b|Request failed with status (?:401|402|403|429)\b|SCRAPING FAILED\b)/i;
 
 export class Pool {
 	readonly name: string;
@@ -126,24 +136,26 @@ export class Pool {
 					event: "call_tool",
 					pool: this.name,
 					tool: toolName,
-					upstream: this.cursor,
+					upstream: prepared.keyIndex,
 				});
 			}
 
 			try {
-				const result = await prepared.client.callTool({
-					name: toolName,
-					arguments: args,
-				});
+				const result = await this.callWithTransientRetry(
+					prepared,
+					toolName,
+					args,
+				);
 
-				if (result.isError) {
+				if (
+					result.isError ||
+					UNFLAGGED_ERROR_PREFIX.test(stringifyContent(result.content))
+				) {
 					const errorText = stringifyContent(result.content);
-					const isRateLimited = this.config.rateLimitPatterns.some((pat) =>
-						new RegExp(pat).test(errorText),
-					);
-
-					if (isRateLimited) {
-						await this.withSwap(() => this.markRateLimited(cooldownSec));
+					if (this.matchesRateLimit(errorText)) {
+						await this.withSwap(() =>
+							this.markRateLimited(cooldownSec, prepared),
+						);
 						continue;
 					}
 
@@ -152,11 +164,63 @@ export class Pool {
 
 				return result;
 			} catch (err) {
-				await this.withSwap(() => this.markFailed(err));
+				const errText = err instanceof Error ? err.message : String(err);
+				if (this.matchesRateLimit(errText)) {
+					await this.withSwap(() =>
+						this.markRateLimited(cooldownSec, prepared),
+					);
+				} else {
+					await this.withSwap(() => this.markFailed(err, prepared));
+				}
 			}
 		}
 
 		return this.exhaustedError();
+	}
+
+	/** Replay only explicitly opted-in tools; quota failures keep normal failover. */
+	private async callWithTransientRetry(
+		prepared: PreparedCall,
+		toolName: string,
+		args: Record<string, unknown>,
+	) {
+		const policy = this.config.transientRetry;
+		for (let attempt = 0; ; attempt++) {
+			const result = await prepared.client.callTool({
+				name: toolName,
+				arguments: args,
+			});
+			const errorText = stringifyContent(result.content);
+			if (
+				!result.isError ||
+				!policy?.tools.includes(toolName) ||
+				attempt >= policy.delaysMs.length ||
+				this.config.rateLimitPatterns.some((pattern) =>
+					new RegExp(pattern).test(errorText),
+				) ||
+				!policy.errorPatterns.some((pattern) =>
+					new RegExp(pattern).test(errorText),
+				)
+			)
+				return result;
+
+			const delayMs = policy.delaysMs[attempt];
+			log({
+				level: "warn",
+				event: "transient_retry",
+				pool: this.name,
+				tool: toolName,
+				upstream: prepared.keyIndex,
+				attempt: attempt + 1,
+				delayMs,
+			});
+			// Never hold the swap mutex during backoff or retry a client replaced
+			// by another caller's quota/transport failure.
+			await sleep(delayMs);
+			if (this.client !== prepared.client) {
+				throw new Error("Upstream replaced during transient retry");
+			}
+		}
 	}
 
 	async routePrompt(
@@ -188,7 +252,7 @@ export class Pool {
 				return result as PromptResult;
 			} catch (err) {
 				// Prompts are not rate-limited reads: fail over once, then error.
-				await this.withSwap(() => this.markFailed(err));
+				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
 
@@ -218,7 +282,7 @@ export class Pool {
 				return result as ReadResult;
 			} catch (err) {
 				// Reads are not rate-limited: fail over once, then error.
-				await this.withSwap(() => this.markFailed(err));
+				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
 
@@ -247,7 +311,7 @@ export class Pool {
 				await prepared.client.subscribeResource({ uri });
 				return null;
 			} catch (err) {
-				await this.withSwap(() => this.markFailed(err));
+				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
 
@@ -276,7 +340,7 @@ export class Pool {
 				await prepared.client.unsubscribeResource({ uri });
 				return null;
 			} catch (err) {
-				await this.withSwap(() => this.markFailed(err));
+				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
 
@@ -336,32 +400,44 @@ export class Pool {
 			this.cursor = (this.cursor + 1) % maxKeys;
 			return { kind: "skip" };
 		}
-		return { kind: "call", client };
+		return { kind: "call", client, keyIndex: this.cursor };
 	}
 
-	private async markRateLimited(cooldownSec: number): Promise<void> {
-		this.cooldowns[this.cursor] = Date.now() + cooldownSec * 1000;
+	private async markRateLimited(
+		cooldownSec: number,
+		prepared: PreparedCall,
+	): Promise<void> {
+		const { keyIndex } = prepared;
+		this.cooldowns[keyIndex] = Date.now() + cooldownSec * 1000;
 		log({
 			level: "warn",
 			event: "rate_limited",
 			pool: this.name,
-			upstream: this.cursor,
-			cooldownUntil: new Date(this.cooldowns[this.cursor]).toISOString(),
+			upstream: keyIndex,
+			cooldownUntil: new Date(this.cooldowns[keyIndex]).toISOString(),
 		});
-		await this.closeCurrent();
-		this.cursor = (this.cursor + 1) % this.config.keys.length;
+		// Another request may already have replaced the failing upstream.
+		if (this.client === prepared.client) {
+			await this.closeCurrent();
+			this.cursor = (keyIndex + 1) % this.config.keys.length;
+		}
 	}
 
-	private async markFailed(err: unknown): Promise<void> {
+	private async markFailed(
+		err: unknown,
+		prepared: PreparedCall,
+	): Promise<void> {
 		log({
 			level: "error",
 			event: "upstream_error",
 			pool: this.name,
-			upstream: this.cursor,
+			upstream: prepared.keyIndex,
 			error: err instanceof Error ? err.message : String(err),
 		});
-		await this.closeCurrent();
-		this.cursor = (this.cursor + 1) % this.config.keys.length;
+		if (this.client === prepared.client) {
+			await this.closeCurrent();
+			this.cursor = (prepared.keyIndex + 1) % this.config.keys.length;
+		}
 	}
 
 	async routeComplete(
@@ -380,7 +456,7 @@ export class Pool {
 				return result as CompleteResult;
 			} catch (err) {
 				lastError = err instanceof Error ? err.message : String(err);
-				await this.withSwap(() => this.markFailed(err));
+				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
 		if (lastError) {
@@ -409,7 +485,7 @@ export class Pool {
 				await prepared.client.setLoggingLevel(level);
 				return null;
 			} catch (err) {
-				await this.withSwap(() => this.markFailed(err));
+				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
 		return unavailableError(this.name, this.config.keys.length);
@@ -469,7 +545,7 @@ export class Pool {
 			content: [
 				{
 					type: "text" as const,
-					text: `All ${maxKeys} keys for '${this.name}' are rate-limited. Retry after ${retryAfter}s.`,
+					text: `All ${maxKeys} keys for '${this.name}' are cooling down after upstream errors (rate limit, quota, or authentication). Retry after ${retryAfter}s.`,
 				},
 			],
 			isError: true,
@@ -512,14 +588,66 @@ export class Pool {
 		await this.closeCurrent();
 	}
 
-	private async spawnUpstream(keyIndex: number): Promise<void> {
-		const envVars = this.config.keys[keyIndex];
-		const transport = new StdioClientTransport({
+	private matchesRateLimit(text: string): boolean {
+		return this.config.rateLimitPatterns.some((pat) =>
+			new RegExp(pat).test(text),
+		);
+	}
+
+	private createTransport(keyEntry: Record<string, string>): Transport {
+		const mode = this.config.transport ?? "stdio";
+		if (mode === "http") {
+			if (!this.config.url) {
+				throw new Error(
+					`Pool "${this.name}": url is required for http transport`,
+				);
+			}
+			const headers = { ...this.config.headers, ...keyEntry };
+			return new StreamableHTTPClientTransport(new URL(this.config.url), {
+				requestInit: { headers },
+			});
+		}
+		if (mode === "sse") {
+			if (!this.config.url) {
+				throw new Error(
+					`Pool "${this.name}": url is required for sse transport`,
+				);
+			}
+			const headers = { ...this.config.headers, ...keyEntry };
+			return new SSEClientTransport(new URL(this.config.url), {
+				requestInit: { headers },
+				eventSourceInit: {
+					fetch: (input, init) =>
+						fetch(input, {
+							...init,
+							headers: {
+								...Object.fromEntries(new Headers(init?.headers).entries()),
+								...headers,
+							},
+						}),
+				},
+			});
+		}
+		if (!this.config.command) {
+			throw new Error(
+				`Pool "${this.name}": command is required for stdio transport`,
+			);
+		}
+		return new StdioClientTransport({
 			command: this.config.command,
-			args: this.config.args,
-			env: { ...process.env, ...envVars } as Record<string, string>,
+			args: this.config.args ?? [],
+			env: {
+				...process.env,
+				...this.config.env,
+				...keyEntry,
+			} as Record<string, string>,
 			cwd: this.config.cwd,
 		});
+	}
+
+	private async spawnUpstream(keyIndex: number): Promise<void> {
+		const keyEntry = this.config.keys[keyIndex];
+		const transport = this.createTransport(keyEntry);
 
 		const client = new Client(
 			{ name: "mcp-pool", version: "0.1.0" },

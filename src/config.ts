@@ -4,8 +4,13 @@ import { z } from "zod";
 
 const PoolConfigSchema = z
 	.object({
-		command: z.string().min(1, "command is required"),
-		args: z.array(z.string()),
+		transport: z.enum(["stdio", "http", "sse"]).default("stdio"),
+		command: z.string().min(1, "command must not be empty").optional(),
+		args: z.array(z.string()).optional(),
+		env: z.record(z.string()).optional(),
+		cwd: z.string().optional(),
+		url: z.string().url("url must be a valid URL").optional(),
+		headers: z.record(z.string()).optional(),
 		keys: z
 			.array(z.record(z.string()))
 			.min(1, "keys must have at least one entry"),
@@ -28,12 +33,95 @@ const PoolConfigSchema = z
 						"all rateLimitPatterns entries must be valid regular expressions",
 				},
 			),
-		cwd: z.string().optional(),
+		transientRetry: z
+			.object({
+				tools: z.array(z.string().min(1)).min(1),
+				errorPatterns: z
+					.array(z.string().min(1))
+					.min(1)
+					.refine(
+						(patterns) =>
+							patterns.every((pattern) => {
+								try {
+									new RegExp(pattern);
+									return true;
+								} catch {
+									return false;
+								}
+							}),
+						{
+							message:
+								"all errorPatterns entries must be valid regular expressions",
+						},
+					),
+				delaysMs: z.array(z.number().int().min(0).max(10_000)).min(1).max(5),
+			})
+			.strict()
+			.optional(),
 		strategy: z.unknown().optional(),
 		maxConsecutiveErrors: z.unknown().optional(),
 	})
 	.strict()
 	.superRefine((value, ctx) => {
+		if (value.transport === "stdio") {
+			if (!value.command) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["command"],
+					message: "command is required for stdio transport",
+				});
+			}
+			if (value.url !== undefined) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["url"],
+					message: "url is only supported for http/sse transport",
+				});
+			}
+			if (value.headers !== undefined) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["headers"],
+					message: "headers is only supported for http/sse transport",
+				});
+			}
+		} else {
+			if (!value.url) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["url"],
+					message: `url is required for ${value.transport} transport`,
+				});
+			}
+			if (value.command !== undefined) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["command"],
+					message: "command is only supported for stdio transport",
+				});
+			}
+			if (value.args !== undefined) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["args"],
+					message: "args is only supported for stdio transport",
+				});
+			}
+			if (value.env !== undefined) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["env"],
+					message: "env is only supported for stdio transport",
+				});
+			}
+			if (value.cwd !== undefined) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["cwd"],
+					message: "cwd is only supported for stdio transport",
+				});
+			}
+		}
 		if (value.strategy !== undefined) {
 			ctx.addIssue({
 				code: z.ZodIssueCode.custom,
@@ -55,7 +143,10 @@ const PoolConfigSchema = z
 			strategy: _strategy,
 			maxConsecutiveErrors: _maxConsecutiveErrors,
 			...config
-		}) => config,
+		}) => ({
+			...config,
+			args: config.transport === "stdio" ? (config.args ?? []) : undefined,
+		}),
 	);
 const ConfigFileSchema = z.object({
 	pools: z.record(PoolConfigSchema),

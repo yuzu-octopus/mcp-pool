@@ -1,10 +1,21 @@
+export type UpstreamTransport = "stdio" | "http" | "sse";
+
 export interface PoolConfig {
-	command: string;
-	args: string[];
+	transport?: UpstreamTransport;
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	url?: string;
+	headers?: Record<string, string>;
 	keys: Record<string, string>[];
 	cooldownSeconds?: number;
 	rateLimitPatterns: string[];
-	cwd?: string;
+	transientRetry?: {
+		tools: string[];
+		errorPatterns: string[];
+		delaysMs: number[];
+	};
 }
 
 export interface ConfigFile {
@@ -12,6 +23,15 @@ export interface ConfigFile {
 }
 
 export type LogEvent =
+	| {
+			level: "warn";
+			event: "transient_retry";
+			pool: string;
+			tool: string;
+			upstream: number;
+			attempt: number;
+			delayMs: number;
+	  }
 	| { level: "info"; event: "upstream_start"; pool: string; keyIndex: number }
 	| {
 			level: "info";

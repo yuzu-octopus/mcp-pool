@@ -40,12 +40,17 @@ Pin upstream versions for reproducible cold starts: `args: ["-y", "firecrawl-mcp
 
 | Field | Description |
 |---|---|
-| `command` | Executable to spawn (required) |
-| `args` | CLI arguments |
+| `command` | Executable to spawn (required for stdio) |
+| `args` | CLI arguments (stdio only) |
 | `keys` | Array of environment-variable objects, one per key (at least 1); values may be literal strings or `${NAME}` references |
 | `rateLimitPatterns` | Regex patterns matched against tool error text (required, at least 1 — safety gate) |
 | `cooldownSeconds` | Seconds a rate-limited key is skipped; defaults to 300 |
-| `cwd` | Working directory for the upstream process |
+| `cwd` | Working directory for the upstream process (stdio only) |
+| `transport` | `stdio` (default), `http`, or `sse` for remote upstreams |
+| `url` | Upstream URL (required for http/sse) |
+| `headers` | Extra HTTP headers merged under each per-key entry (http/sse only) |
+| `env` | Extra environment variables for the upstream process (stdio only) |
+| `transientRetry` | Opt-in same-key retries for listed tools whose error text matches (delays in ms, up to 5 attempts) |
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
 
