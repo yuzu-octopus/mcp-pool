@@ -3,6 +3,8 @@
  * Test helper MCP server for integration tests.
  * Behaviors controlled via env vars:
  *   TEST_TOOLS_JSON — JSON array of tools (default: echo tool)
+ *   TEST_PROMPTS_JSON — JSON array of prompts (default: none; set TEST_NO_PROMPTS=1 to force none)
+ *   TEST_NO_PROMPTS — if "1", offer no prompts capability at all
  *   TEST_RATE_LIMIT_EVERY_N — return rate-limit error on every Nth call (default: 0 = never)
  *   TEST_RATE_LIMIT_COUNT — max rate-limited responses before returning success (0 = unlimited)
  *   TEST_CRASH_AFTER — crash after N tool calls (default: 0 = never)
@@ -26,6 +28,8 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
 	CallToolRequestSchema,
+	GetPromptRequestSchema,
+	ListPromptsRequestSchema,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
@@ -54,6 +58,25 @@ function getTools() {
 	}
 }
 
+function getPrompts(): Array<{
+	name: string;
+	description?: string;
+	arguments?: Array<{
+		name: string;
+		description?: string;
+		required?: boolean;
+	}>;
+}> {
+	const raw = process.env.TEST_PROMPTS_JSON;
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
 const rateLimitEveryN = parseInt(
 	process.env.TEST_RATE_LIMIT_EVERY_N || "0",
 	10,
@@ -62,14 +85,46 @@ const rateLimitMax = parseInt(process.env.TEST_RATE_LIMIT_COUNT || "0", 10);
 const crashAfter = parseInt(process.env.TEST_CRASH_AFTER || "0", 10);
 const errorText = process.env.TEST_TOOL_ERROR_TEXT || "rate_limit_exceeded";
 
+const offerPrompts = process.env.TEST_NO_PROMPTS !== "1";
+
 const server = new Server(
 	{ name: "test-helper-server", version: "0.1.0" },
-	{ capabilities: { tools: {} } },
+	{
+		capabilities: {
+			tools: {},
+			...(offerPrompts ? { prompts: { listChanged: true } } : {}),
+		},
+	},
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
 	return { tools: getTools() };
 });
+
+if (offerPrompts) {
+	server.setRequestHandler(ListPromptsRequestSchema, async () => {
+		return { prompts: getPrompts() };
+	});
+
+	server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+		const prompt = getPrompts().find((p) => p.name === request.params.name);
+		if (!prompt) {
+			throw new Error(`Unknown prompt: "${request.params.name}"`);
+		}
+		return {
+			description: prompt.description,
+			messages: [
+				{
+					role: "user" as const,
+					content: {
+						type: "text" as const,
+						text: `prompt:${prompt.name} args:${JSON.stringify(request.params.arguments ?? {})}`,
+					},
+				},
+			],
+		};
+	});
+}
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	callCount++;

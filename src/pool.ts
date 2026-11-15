@@ -1,6 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type {
+	Prompt,
+	ServerCapabilities,
+	Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./logger.js";
 import type { PoolConfig } from "./types.js";
 
@@ -8,6 +12,16 @@ import type { PoolConfig } from "./types.js";
 const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
 
 type CallResult = {
+	content: Array<{ type: "text"; text: string }>;
+	isError: boolean;
+};
+
+type PromptResult = {
+	messages: Array<unknown>;
+	description?: string;
+};
+
+type PromptError = {
 	content: Array<{ type: "text"; text: string }>;
 	isError: boolean;
 };
@@ -20,6 +34,8 @@ export class Pool {
 	private cursor = 0;
 	private client?: Client;
 	private cachedTools: Tool[] = [];
+	private cachedPrompts: Prompt[] = [];
+	private upstreamCapabilities?: ServerCapabilities;
 	private started = false;
 	private routeLock: Promise<void> = Promise.resolve();
 	private cooldowns: number[] = [];
@@ -115,6 +131,50 @@ export class Pool {
 		}
 
 		return this.exhaustedError();
+	}
+
+	async routePrompt(
+		promptName: string,
+		args?: Record<string, string>,
+	): Promise<PromptResult | PromptError> {
+		if (!this.started) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Pool "${this.name}" not started`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		const maxKeys = this.config.keys.length;
+		for (let attempt = 0; attempt < maxKeys; attempt++) {
+			const prepared = await this.withSwap(() => this.prepareNext());
+			if (prepared.kind === "skip") continue;
+
+			try {
+				const result = await prepared.client.getPrompt({
+					name: promptName,
+					arguments: args,
+				});
+				return result as PromptResult;
+			} catch (err) {
+				// Prompts are not rate-limited reads: fail over once, then error.
+				await this.withSwap(() => this.markFailed(err));
+			}
+		}
+
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `All ${maxKeys} keys for '${this.name}' failed to connect or are unavailable.`,
+				},
+			],
+			isError: true,
+		};
 	}
 
 	/**
@@ -239,6 +299,14 @@ export class Pool {
 		return this.cachedTools;
 	}
 
+	getPrompts(): Prompt[] {
+		return this.cachedPrompts;
+	}
+
+	getUpstreamCapabilities(): ServerCapabilities | undefined {
+		return this.upstreamCapabilities;
+	}
+
 	async close(): Promise<void> {
 		await this.closeCurrent();
 	}
@@ -274,12 +342,22 @@ export class Pool {
 		});
 
 		let tools: Tool[];
+		let prompts: Prompt[] = [];
 		try {
 			const handshake = await Promise.race([
-				client.connect(transport).then(() => client.listTools()),
+				client.connect(transport).then(async () => {
+					const caps = client.getServerCapabilities();
+					const [toolRes, promptRes] = await Promise.all([
+						client.listTools(),
+						caps?.prompts ? client.listPrompts().catch(() => null) : null,
+					]);
+					return { tools: toolRes, prompts: promptRes, caps };
+				}),
 				timeout,
 			]);
-			tools = handshake.tools as Tool[];
+			tools = (handshake.tools?.tools ?? []) as Tool[];
+			prompts = (handshake.prompts?.prompts ?? []) as Prompt[];
+			this.upstreamCapabilities = handshake.caps;
 		} catch (err) {
 			await client.close().catch(() => {});
 			throw err;
@@ -297,6 +375,18 @@ export class Pool {
 			}
 		} else {
 			this.cachedTools = tools;
+		}
+
+		if (this.cachedPrompts.length > 0) {
+			const mismatch = findPromptMismatch(this.cachedPrompts, prompts);
+			if (mismatch) {
+				await client.close();
+				throw new Error(
+					`Pool "${this.name}" key ${keyIndex} prompts mismatch: ${mismatch}`,
+				);
+			}
+		} else {
+			this.cachedPrompts = prompts;
 		}
 
 		this.client = client;
@@ -335,6 +425,29 @@ function findToolMismatch(a: Tool[], b: Tool[]): string | null {
 		const schemaB = JSON.stringify(toolB.inputSchema);
 		if (schemaA !== schemaB) {
 			return `tool "${name}" inputSchema mismatch`;
+		}
+	}
+
+	return null;
+}
+
+function findPromptMismatch(a: Prompt[], b: Prompt[]): string | null {
+	const mapA = new Map(a.map((p) => [p.name, p]));
+	const mapB = new Map(b.map((p) => [p.name, p]));
+
+	if (mapA.size !== mapB.size) {
+		return `prompt count mismatch: ${mapA.size} vs ${mapB.size}`;
+	}
+
+	for (const [name, promptA] of mapA) {
+		const promptB = mapB.get(name);
+		if (!promptB) {
+			return `prompt "${name}" missing from upstream`;
+		}
+		const argsA = JSON.stringify(promptA.arguments ?? []);
+		const argsB = JSON.stringify(promptB.arguments ?? []);
+		if (argsA !== argsB) {
+			return `prompt "${name}" arguments mismatch`;
 		}
 	}
 

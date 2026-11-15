@@ -28,6 +28,13 @@ export type LogEvent =
 			upstream: number;
 	  }
 	| {
+			level: "info";
+			event: "route_prompt";
+			pool: string;
+			prompt: string;
+			upstream: number;
+	  }
+	| {
 			level: "warn";
 			event: "rate_limited";
 			pool: string;
