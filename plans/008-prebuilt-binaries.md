@@ -286,6 +286,27 @@ pattern [5][6]: detect, resolve, exec, fall back. Requirements:
 **Verify**: `bun run lint` + `bun run typecheck` → exit 0 (shim is plain
 JS; biome still lints `bin/`). Functional checks live in step 3.
 
+### Step 2b: `--rebuild` flag (operator requirement 2026-11-15)
+
+Shim-side (`bin/mcp-pool.js`), early exit like `--help`: no config load, no daemon.
+Compile the binary for THIS platform in place and exit 0:
+
+1. `args.includes("--rebuild")` → `rebuild(rootDir)`, before override/table/dist.
+2. Resolve TABLE key → BUN_TARGETS map (same matrix as `build-binaries.sh`;
+   `linux-arm64-musl` is absent — no bun target — and errors with the manual recipe).
+3. Require readable `<pkgroot>/src/index.ts` (this install ships `src/`); else error
+   pointing at reinstall-with-source or `MCP_POOL_BINARY`.
+4. Resolve platform package `bin/` dir via `createRequire(...).resolve()`; missing →
+   error (reinstall optionalDependencies, or manual build + `MCP_POOL_BINARY`).
+5. `mkdir -p` + W_OK check; unwritable → error hinting sudo / user-writable
+   prefix / `MCP_POOL_BINARY`.
+6. `bun build --compile --minify --target <t> src/index.ts --outfile <tmp>`;
+   bun-missing (ENOENT) and build-failure errors are clean messages, exit 1.
+7. `chmod 755` + atomic rename (rm + retry on win); print output path, exit 0.
+
+**Verify**: success + handshake, bun-missing, unwritable-outdir, no-src cases
+(covered in step 3's matrix proof and `check:package`).
+
 ### Step 3: Build script + local end-to-end proof (the whole point)
 
 Write `scripts/build-binaries.sh` (POSIX sh, no bashisms; single source
