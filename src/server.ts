@@ -1,4 +1,13 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type {
+	CallToolRequest,
+	CompleteRequest,
+	GetPromptRequest,
+	ReadResourceRequest,
+	SetLevelRequest,
+	SubscribeRequest,
+	UnsubscribeRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
 	CallToolRequestSchema,
 	CompleteRequestSchema,
@@ -88,149 +97,267 @@ function seedUriMap(uriToPool: Map<string, Pool>, pools: Pool[]): void {
 }
 
 /**
- * Builds an MCP server bound to one set of pools. Callers create one of these
- * per connection so every client gets its own session over shared pools.
+ * F9: per-pool-set shared request handling.
+ *
+ * Verified against the SDK before sharing anything: `Protocol.connect`
+ * throws when already connected ("use a separate Protocol instance per
+ * connection") and one Server holds a single `_transport`, so a single
+ * Server instance can NOT serve concurrent HTTP requests — per-request
+ * Servers stay. SKIPPED: sharing one Server across requests (unsafe).
+ * What IS shared per pool-set (keyed by the pools array identity, which
+ * index.ts passes unchanged per request):
+ * - the handler function set (registered by reference on each new Server),
+ * - the prefixed list payloads + uriToPool map, memoized and invalidated by
+ *   per-pool list_changed revisions (Pool.listChangedRevision, bumped on
+ *   every notification and every successful upstream spawn).
  */
-export function buildServer(pools: Pool[], verbose: boolean): Server {
-	const hasPrompts = pools.some(
-		(pool) => pool.getUpstreamCapabilities()?.prompts !== undefined,
-	);
-	const hasResources = pools.some(
-		(pool) => pool.getUpstreamCapabilities()?.resources !== undefined,
-	);
-	const hasCompletions = pools.some(
-		(pool) => pool.getUpstreamCapabilities()?.completions !== undefined,
-	);
-	const hasLogging = pools.some(
-		(pool) => pool.getUpstreamCapabilities()?.logging !== undefined,
-	);
-	const server = new Server(
-		{ name: "mcp-pool", version: packageJson.version },
-		{
-			capabilities: {
-				tools: {},
-				...(hasPrompts ? { prompts: { listChanged: true } } : {}),
-				...(hasResources
-					? { resources: { subscribe: true, listChanged: true } }
-					: {}),
-				...(hasCompletions ? { completions: {} } : {}),
-				...(hasLogging ? { logging: {} } : {}),
-			},
-		},
-	);
+type PrefixedTool = {
+	name: string;
+	description?: string;
+	inputSchema: {
+		type: "object";
+		properties?: Record<string, unknown>;
+		required?: string[];
+	};
+};
 
-	// Per-build URI→pool map. Verbatim URIs: keyed by the exact upstream
-	// `uri`, so a collision across pools would silently pick one — a STOP
-	// condition per the plan, not something we paper over here.
-	const uriToPool = new Map<string, Pool>();
-	seedUriMap(uriToPool, pools);
-	function rebuildUriMap(): void {
-		uriToPool.clear();
-		seedUriMap(uriToPool, pools);
-	}
+type PrefixedPrompt = {
+	name: string;
+	description?: string;
+	arguments?: Array<{
+		name: string;
+		description?: string;
+		required?: boolean;
+	}>;
+};
 
-	server.setRequestHandler(ListToolsRequestSchema, async () => {
-		const tools: Array<{
-			name: string;
-			description?: string;
-			inputSchema: {
-				type: "object";
-				properties?: Record<string, unknown>;
-				required?: string[];
-			};
-		}> = [];
+type PrefixedResource = {
+	name: string;
+	uri: string;
+	description?: string;
+	mimeType?: string;
+};
 
+type PrefixedResourceTemplate = {
+	name: string;
+	uriTemplate: string;
+	description?: string;
+	mimeType?: string;
+};
+
+type FreshLists = {
+	tools: PrefixedTool[];
+	prompts: PrefixedPrompt[];
+	resources: PrefixedResource[];
+	templates: PrefixedResourceTemplate[];
+	uriToPool: Map<string, Pool>;
+};
+
+type CachedLists = FreshLists & { revs: number[] };
+
+type PoolSetState = {
+	pools: Pool[];
+	verbose: boolean;
+	poolByName: Map<string, Pool>;
+	lists: CachedLists | undefined;
+};
+
+const poolSetShared = new WeakMap<
+	Pool[],
+	{ state: PoolSetState; handlers: PoolSetHandlers }
+>;
+
+function getShared(
+	pools: Pool[],
+	verbose: boolean,
+): { state: PoolSetState; handlers: PoolSetHandlers } {
+	let shared = poolSetShared.get(pools);
+	if (!shared || shared.state.pools.length !== pools.length) {
+		const poolByName = new Map<string, Pool>();
 		for (const pool of pools) {
-			const prefix = `${pool.name}__`;
-			for (const tool of pool.getTools()) {
-				tools.push({
-					name: prefix + tool.name,
-					description: tool.description
-						? `[${pool.name}] ${tool.description}`
-						: `[${pool.name}]`,
-					inputSchema: tool.inputSchema,
-				});
-			}
+			if (!poolByName.has(pool.name)) poolByName.set(pool.name, pool);
 		}
+		const state: PoolSetState = {
+			pools,
+			verbose,
+			poolByName,
+			lists: undefined,
+		};
+		shared = { state, handlers: createPoolSetHandlers(state) };
+		poolSetShared.set(pools, shared);
+	}
+	shared.state.verbose = verbose;
+	return shared;
+}
 
-		return { tools };
-	});
+/** Memoized prefixed lists + uri map; rebuilt when any pool rev changes. */
+function ensureFreshLists(state: PoolSetState): FreshLists {
+	const revs = state.pools.map((pool) => pool.listChangedRevision());
+	let { lists } = state;
+	if (
+		!lists ||
+		revs.length !== lists.revs.length ||
+		revs.some((rev, i) => rev !== lists.revs[i])
+	) {
+		const uriToPool = new Map<string, Pool>();
+		seedUriMap(uriToPool, state.pools);
+		lists = {
+			revs,
+			tools: buildPrefixedTools(state.pools),
+			prompts: buildPrefixedPrompts(state.pools),
+			resources: buildPrefixedResources(state.pools),
+			templates: buildPrefixedTemplates(state.pools),
+			uriToPool,
+		};
+		state.lists = lists;
+	}
+	return lists;
+}
 
-	server.setRequestHandler(CallToolRequestSchema, async (request) => {
-		const split = splitPrefix(request.params.name, "tool");
-		if ("error" in split) {
-			return {
-				content: [{ type: "text" as const, text: split.error }],
-				isError: true,
-			};
-		}
-
-		const pool = pools.find((p) => p.name === split.poolName);
-
-		if (!pool) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Unknown pool: "${split.poolName}"` },
-				],
-				isError: true,
-			};
-		}
-
-		if (verbose) {
-			log({
-				level: "info",
-				event: "route",
-				pool: split.poolName,
-				tool: split.short,
-				upstream: -1,
+function buildPrefixedTools(pools: Pool[]): PrefixedTool[] {
+	const tools: PrefixedTool[] = [];
+	for (const pool of pools) {
+		const prefix = `${pool.name}__`;
+		for (const tool of pool.getTools()) {
+			tools.push({
+				name: prefix + tool.name,
+				description: tool.description
+					? `[${pool.name}] ${tool.description}`
+					: `[${pool.name}]`,
+				inputSchema: tool.inputSchema,
 			});
 		}
+	}
+	return tools;
+}
 
-		return (await pool.routeCall(
-			split.short,
-			request.params.arguments ?? {},
-			verbose,
-		)) as {
-			content: Array<{ type: "text"; text: string; annotations?: unknown }>;
-			isError?: boolean;
-		};
-	});
+function buildPrefixedPrompts(pools: Pool[]): PrefixedPrompt[] {
+	const prompts: PrefixedPrompt[] = [];
+	for (const pool of pools) {
+		const prefix = `${pool.name}__`;
+		for (const prompt of pool.getPrompts()) {
+			prompts.push({
+				name: prefix + prompt.name,
+				description: prompt.description
+					? `[${pool.name}] ${prompt.description}`
+					: `[${pool.name}]`,
+				arguments: prompt.arguments,
+			});
+		}
+	}
+	return prompts;
+}
 
-	if (hasPrompts) {
-		server.setRequestHandler(ListPromptsRequestSchema, async () => {
-			const prompts: Array<{
-				name: string;
-				description?: string;
-				arguments?: Array<{
-					name: string;
-					description?: string;
-					required?: boolean;
-				}>;
-			}> = [];
+function buildPrefixedResources(pools: Pool[]): PrefixedResource[] {
+	const resources: PrefixedResource[] = [];
+	for (const pool of pools) {
+		const prefix = `${pool.name}__`;
+		for (const resource of pool.getResources()) {
+			resources.push({
+				name: prefix + resource.name,
+				uri: resource.uri,
+				description: resource.description
+					? `[${pool.name}] ${resource.description}`
+					: `[${pool.name}]`,
+				mimeType: resource.mimeType,
+			});
+		}
+	}
+	return resources;
+}
 
-			for (const pool of pools) {
-				const prefix = `${pool.name}__`;
-				for (const prompt of pool.getPrompts()) {
-					prompts.push({
-						name: prefix + prompt.name,
-						description: prompt.description
-							? `[${pool.name}] ${prompt.description}`
-							: `[${pool.name}]`,
-						arguments: prompt.arguments,
-					});
-				}
+function buildPrefixedTemplates(
+	pools: Pool[],
+): PrefixedResourceTemplate[] {
+	const templates: PrefixedResourceTemplate[] = [];
+	for (const pool of pools) {
+		const prefix = `${pool.name}__`;
+		for (const template of pool.getResourceTemplates()) {
+			templates.push({
+				name: prefix + template.name,
+				uriTemplate: template.uriTemplate,
+				description: template.description
+					? `[${pool.name}] ${template.description}`
+					: `[${pool.name}]`,
+				mimeType: template.mimeType,
+			});
+		}
+	}
+	return templates;
+}
+
+/**
+ * F10: template-only fallback for URIs the exact map misses. Exact URIs are
+ * served by the memoized uriToPool map; this linear scan runs only for
+ * non-exact URIs and matches `{param}` placeholders (never plain resources).
+ */
+function findTemplatePool(pools: Pool[], uri: string): Pool | undefined {
+	for (const pool of pools) {
+		if (pool.resolveTemplateForUri(uri)) return pool;
+	}
+	return undefined;
+}
+
+type PoolSetHandlers = ReturnType<typeof createPoolSetHandlers>;
+
+/** Handler set shared by every Server built over the same pools. */
+function createPoolSetHandlers(state: PoolSetState) {
+	return {
+		listTools: async () => {
+			return { tools: ensureFreshLists(state).tools };
+		},
+
+		callTool: async (request: CallToolRequest) => {
+			const split = splitPrefix(request.params.name, "tool");
+			if ("error" in split) {
+				return {
+					content: [{ type: "text" as const, text: split.error }],
+					isError: true,
+				};
 			}
 
-			return { prompts };
-		});
+			const pool = state.poolByName.get(split.poolName);
 
-		server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+			if (!pool) {
+				return {
+					content: [
+						{ type: "text" as const, text: `Unknown pool: "${split.poolName}"` },
+					],
+					isError: true,
+				};
+			}
+
+			if (state.verbose) {
+				log({
+					level: "info",
+					event: "route",
+					pool: split.poolName,
+					tool: split.short,
+					upstream: -1,
+				});
+			}
+
+			return (await pool.routeCall(
+				split.short,
+				request.params.arguments ?? {},
+				state.verbose,
+			)) as {
+				content: Array<{ type: "text"; text: string; annotations?: unknown }>;
+				isError?: boolean;
+			};
+		},
+
+		listPrompts: async () => {
+			return { prompts: ensureFreshLists(state).prompts };
+		},
+
+		getPrompt: async (request: GetPromptRequest) => {
 			const split = splitPrefix(request.params.name, "prompt");
 			if ("error" in split) {
 				throw new Error(split.error);
 			}
 
-			const pool = pools.find((p) => p.name === split.poolName);
+			const pool = state.poolByName.get(split.poolName);
 			if (!pool) {
 				throw new Error(`Unknown pool: "${split.poolName}"`);
 			}
@@ -258,65 +385,23 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				throw new Error(result.content[0].text);
 			}
 			return result;
-		});
-	}
+		},
 
-	if (hasResources) {
-		server.setRequestHandler(ListResourcesRequestSchema, async () => {
-			rebuildUriMap();
-			const resources: Array<{
-				name: string;
-				uri: string;
-				description?: string;
-				mimeType?: string;
-			}> = [];
+		listResources: async () => {
+			return { resources: ensureFreshLists(state).resources };
+		},
 
-			for (const pool of pools) {
-				const prefix = `${pool.name}__`;
-				for (const resource of pool.getResources()) {
-					resources.push({
-						name: prefix + resource.name,
-						uri: resource.uri,
-						description: resource.description
-							? `[${pool.name}] ${resource.description}`
-							: `[${pool.name}]`,
-						mimeType: resource.mimeType,
-					});
-				}
-			}
+		listTemplates: async () => {
+			return {
+				resourceTemplates: ensureFreshLists(state).templates,
+			};
+		},
 
-			return { resources };
-		});
-
-		server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-			rebuildUriMap();
-			const resourceTemplates: Array<{
-				name: string;
-				uriTemplate: string;
-				description?: string;
-				mimeType?: string;
-			}> = [];
-
-			for (const pool of pools) {
-				const prefix = `${pool.name}__`;
-				for (const template of pool.getResourceTemplates()) {
-					resourceTemplates.push({
-						name: prefix + template.name,
-						uriTemplate: template.uriTemplate,
-						description: template.description
-							? `[${pool.name}] ${template.description}`
-							: `[${pool.name}]`,
-						mimeType: template.mimeType,
-					});
-				}
-			}
-
-			return { resourceTemplates };
-		});
-
-		server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+		readResource: async (request: ReadResourceRequest) => {
+			const { uriToPool } = ensureFreshLists(state);
 			const pool =
-				uriToPool.get(request.params.uri) ?? findUriPool(request.params.uri);
+				uriToPool.get(request.params.uri) ??
+				findTemplatePool(state.pools, request.params.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
@@ -334,11 +419,13 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				throw new Error(result.content[0].text);
 			}
 			return result;
-		});
+		},
 
-		server.setRequestHandler(SubscribeRequestSchema, async (request) => {
+		subscribe: async (request: SubscribeRequest) => {
+			const { uriToPool } = ensureFreshLists(state);
 			const pool =
-				uriToPool.get(request.params.uri) ?? findUriPool(request.params.uri);
+				uriToPool.get(request.params.uri) ??
+				findTemplatePool(state.pools, request.params.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
@@ -356,11 +443,13 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				throw new Error(err.content[0].text);
 			}
 			return {};
-		});
+		},
 
-		server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
+		unsubscribe: async (request: UnsubscribeRequest) => {
+			const { uriToPool } = ensureFreshLists(state);
 			const pool =
-				uriToPool.get(request.params.uri) ?? findUriPool(request.params.uri);
+				uriToPool.get(request.params.uri) ??
+				findTemplatePool(state.pools, request.params.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
@@ -378,11 +467,9 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				throw new Error(err.content[0].text);
 			}
 			return {};
-		});
-	}
+		},
 
-	if (hasCompletions) {
-		server.setRequestHandler(CompleteRequestSchema, async (request) => {
+		complete: async (request: CompleteRequest) => {
 			const ref = request.params.ref as
 				| { type: "ref/prompt"; name: string }
 				| { type: "ref/resource"; uri: string };
@@ -392,7 +479,7 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				if ("error" in split) {
 					throw new Error(split.error);
 				}
-				pool = pools.find((p) => p.name === split.poolName);
+				pool = state.poolByName.get(split.poolName);
 				if (!pool) {
 					throw new Error(`Unknown pool: "${split.poolName}"`);
 				}
@@ -412,7 +499,10 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				}
 				return result;
 			}
-			pool = uriToPool.get(ref.uri) ?? findUriPool(ref.uri);
+			const { uriToPool } = ensureFreshLists(state);
+			pool =
+				uriToPool.get(ref.uri) ??
+				findTemplatePool(state.pools, ref.uri);
 			if (!pool) {
 				throw new Error(`Unknown resource: "${ref.uri}"`);
 			}
@@ -428,17 +518,81 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 				throw new Error(result.content[0].text);
 			}
 			return result;
-		});
+		},
+
+		setLevel: async (request: SetLevelRequest) => {
+			// Shared upstream: best-effort forward to every connected pool.
+			await Promise.allSettled(
+				state.pools.map((pool) => pool.routeSetLevel(request.params.level)),
+			);
+			return {};
+		},
+	};
+}
+
+/**
+ * Builds an MCP server bound to one set of pools. Callers create one of these
+ * per connection so every client gets its own session over shared pools.
+ */
+export function buildServer(pools: Pool[], verbose: boolean): Server {
+	// Shared handler set + memoized lists for this pool-set; the Server
+	// itself stays per-connection (SDK Protocol forbids sharing it).
+	const { handlers } = getShared(pools, verbose);
+	const hasPrompts = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.prompts !== undefined,
+	);
+	const hasResources = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.resources !== undefined,
+	);
+	const hasCompletions = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.completions !== undefined,
+	);
+	const hasLogging = pools.some(
+		(pool) => pool.getUpstreamCapabilities()?.logging !== undefined,
+	);
+	const server = new Server(
+		{ name: "mcp-pool", version: packageJson.version },
+		{
+			capabilities: {
+				tools: {},
+				...(hasPrompts ? { prompts: { listChanged: true } } : {}),
+				...(hasResources
+					? { resources: { subscribe: true, listChanged: true } }
+					: {}),
+				...(hasCompletions ? { completions: {} } : {}),
+				...(hasLogging ? { logging: {} } : {}),
+			},
+		},
+	);
+
+	server.setRequestHandler(ListToolsRequestSchema, handlers.listTools);
+	server.setRequestHandler(CallToolRequestSchema, handlers.callTool);
+
+	if (hasPrompts) {
+		server.setRequestHandler(ListPromptsRequestSchema, handlers.listPrompts);
+		server.setRequestHandler(GetPromptRequestSchema, handlers.getPrompt);
+	}
+
+	if (hasResources) {
+		server.setRequestHandler(
+			ListResourcesRequestSchema,
+			handlers.listResources,
+		);
+		server.setRequestHandler(
+			ListResourceTemplatesRequestSchema,
+			handlers.listTemplates,
+		);
+		server.setRequestHandler(ReadResourceRequestSchema, handlers.readResource);
+		server.setRequestHandler(SubscribeRequestSchema, handlers.subscribe);
+		server.setRequestHandler(UnsubscribeRequestSchema, handlers.unsubscribe);
+	}
+
+	if (hasCompletions) {
+		server.setRequestHandler(CompleteRequestSchema, handlers.complete);
 	}
 
 	if (hasLogging) {
-		server.setRequestHandler(SetLevelRequestSchema, async (request) => {
-			// Shared upstream: best-effort forward to every connected pool.
-			await Promise.allSettled(
-				pools.map((pool) => pool.routeSetLevel(request.params.level)),
-			);
-			return {};
-		});
+		server.setRequestHandler(SetLevelRequestSchema, handlers.setLevel);
 	}
 
 	// list_changed fan-out: each session subscribes once at build time to the
@@ -463,13 +617,6 @@ export function buildServer(pools: Pool[], verbose: boolean): Server {
 		for (const unsubscribe of unsubscribes) unsubscribe();
 		await originalClose();
 	};
-
-	function findUriPool(uri: string): Pool | undefined {
-		for (const pool of pools) {
-			if (pool.resolvePoolForUri(uri)) return pool;
-		}
-		return undefined;
-	}
 
 	return server;
 }

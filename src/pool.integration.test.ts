@@ -211,6 +211,42 @@ describe("Pool routing", () => {
 		expect(second.content[0].text).toMatch(/retry after/i);
 		await pool.close();
 	});
+
+	test("concurrent failovers advance exactly once (F7 ordering)", async () => {
+		const pool = new Pool(
+			"test",
+			poolConfig({
+				keys: [{ KEY: "a", TEST_RATE_LIMIT_EVERY_N: "1" }, { KEY: "b" }],
+			}),
+		);
+		const lines: string[] = [];
+		const original = console.error;
+		console.error = (...values: unknown[]) => lines.push(values.join(" "));
+		try {
+			await pool.start();
+			const results = await Promise.all(
+				Array.from({ length: 10 }, () =>
+					pool.routeCall("echo", { message: "hi" }),
+				),
+			);
+			for (const result of results) {
+				assertCallResult(result);
+				expect(result.isError ?? false).toBe(false);
+				expect(result.content[0].text).toBe('{"message":"hi"}');
+			}
+			const starts = (keyIndex: number) =>
+				lines.filter(
+					(line) =>
+						line.includes('"event":"upstream_start"') &&
+						line.includes(`"keyIndex":${keyIndex}`),
+				).length;
+			expect(starts(0)).toBe(1);
+			expect(starts(1)).toBe(1);
+		} finally {
+			console.error = original;
+			await pool.close();
+		}
+	});
 });
 
 describe("transient retries (007-B)", () => {

@@ -23,6 +23,20 @@ import type { PoolConfig } from "./types.js";
 
 /** Upstream spawn/connect budget; a hung subprocess must not block startup. */
 const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
+/** Per-tick Date.now() cache for cooldown comparisons: one clock sample is
+ * shared by every check in the same tick instead of sampling per call. Reset
+ * via microtask, so the next tick re-samples. Monotonic enough for cooldown
+ * expiry; the warn-path toISOString below still uses a fresh Date. */
+let cachedTickNow = 0;
+function tickNow(): number {
+	if (cachedTickNow === 0) {
+		cachedTickNow = Date.now();
+		queueMicrotask(() => {
+			cachedTickNow = 0;
+		});
+	}
+	return cachedTickNow;
+}
 
 type CallResult = {
 	content: Array<{ type: "text"; text: string }>;
@@ -77,6 +91,25 @@ export class Pool {
 	private cooldowns: number[] = [];
 	private rateLimitRes: RegExp[];
 	private transientErrorRes: RegExp[] | undefined;
+	// Snapshot of process.env at construction; spreading it per spawn re-reads
+	// the whole environment object on every upstream start.
+	private readonly baseEnv: Record<string, string>;
+	// Per-key merged static headers ({...config.headers, ...keyEntry}) for the
+	// http/sse transports. Only dynamic per-request headers merge per call.
+	private readonly keyHeaders: Record<string, string>[];
+	// Catalog hashes cached at first fetch. Failover compares hashes instead
+	// of re-serializing every schema; the hash comparison IS the mismatch
+	// gate (a detailed diff runs only to build the error message).
+	private toolCatalogHash?: string;
+	private promptCatalogHash?: string;
+	// Compiled uriTemplate matchers, rebuilt with cachedTemplates.
+	private templateMatchers: RegExp[] = [];
+	// Bumped on every list_changed notification; server.ts memoizes prefixed
+	// lists against it.
+	private listRevisionValue = 0;
+	// Fast-path flag for withSwap: true while no swap section is running or
+	// queued. Flipped synchronously, so exactly one contender sees idle.
+	private routeLockIdle = true;
 
 	constructor(name: string, config: PoolConfig) {
 		this.name = name;
@@ -86,6 +119,11 @@ export class Pool {
 		this.transientErrorRes = config.transientRetry?.errorPatterns.map(
 			(p) => new RegExp(p),
 		);
+		this.baseEnv = { ...process.env } as Record<string, string>;
+		this.keyHeaders = config.keys.map((keyEntry) => ({
+			...config.headers,
+			...keyEntry,
+		}));
 	}
 
 	async start(): Promise<void> {
@@ -351,6 +389,21 @@ export class Pool {
 	 * in-flight callTool runs outside it.
 	 */
 	private async withSwap<T>(fn: () => T | Promise<T>): Promise<T> {
+		if (this.routeLockIdle) {
+			// Fast path: the lock is uncontended, so run inline without extra
+			// promise allocations or microtask hops. The flag flip is
+			// synchronous, so a concurrent caller can only take the queued
+			// path below; FIFO ordering is preserved through routeLock.
+			this.routeLockIdle = false;
+			const next = Promise.withResolvers<void>();
+			this.routeLock = next.promise;
+			try {
+				return await fn();
+			} finally {
+				this.routeLockIdle = true;
+				next.resolve();
+			}
+		}
 		const prev = this.routeLock;
 		const next = Promise.withResolvers<void>();
 		this.routeLock = next.promise;
@@ -371,7 +424,7 @@ export class Pool {
 	private async prepareNext(): Promise<Prepared> {
 		const maxKeys = this.config.keys.length;
 
-		if (this.cooldowns[this.cursor] > Date.now()) {
+		if (this.cooldowns[this.cursor] > tickNow()) {
 			this.cursor = (this.cursor + 1) % maxKeys;
 			return { kind: "skip" };
 		}
@@ -407,7 +460,7 @@ export class Pool {
 		prepared: PreparedCall,
 	): Promise<void> {
 		const { keyIndex } = prepared;
-		this.cooldowns[keyIndex] = Date.now() + cooldownSec * 1000;
+		this.cooldowns[keyIndex] = tickNow() + cooldownSec * 1000;
 		log({
 			level: "warn",
 			event: "rate_limited",
@@ -509,6 +562,7 @@ export class Pool {
 	}
 
 	private fireListChanged(kind: ListChangedKind): void {
+		this.listRevisionValue++;
 		for (const listener of this.listChangedListeners) {
 			listener(kind);
 		}
@@ -516,7 +570,7 @@ export class Pool {
 
 	private exhaustedError(): CallResult {
 		const maxKeys = this.config.keys.length;
-		const now = Date.now();
+		const now = tickNow();
 		const active = this.cooldowns.filter((c) => c > now);
 
 		log({
@@ -571,14 +625,19 @@ export class Pool {
 		return this.upstreamCapabilities;
 	}
 
+	/** Monotonic list_changed revision for memoized prefixed-list caches. */
+	listChangedRevision(): number {
+		return this.listRevisionValue;
+	}
+
 	/**
-	 * Per-pool URI→pool lookup over cached resources and templates. Template
-	 * matching is exact-template-string only (a concrete resource URI never
-	 * matches a `.../{id}` template here; completion refs pass raw templates).
+	 * Template fallback: concrete URI matching a cached `uriTemplate` with
+	 * `{param}` placeholders. Exact URIs are served by the server-side
+	 * uriToPool map; this scan runs only for URIs the map misses.
 	 */
-	resolvePoolForUri(uri: string): Pool | undefined {
-		return this.cachedResources.some((r) => r.uri === uri) ||
-			this.cachedTemplates.some((t) => t.uriTemplate === uri)
+	resolveTemplateForUri(uri: string): Pool | undefined {
+		if (this.templateMatchers.length === 0) return undefined;
+		return this.templateMatchers.some((re) => re.test(uri))
 			? this
 			: undefined;
 	}
@@ -591,15 +650,17 @@ export class Pool {
 		return this.rateLimitRes.some((re) => re.test(text));
 	}
 
-	private createTransport(keyEntry: Record<string, string>): Transport {
+	private createTransport(keyIndex: number): Transport {
 		const mode = this.config.transport ?? "stdio";
+		// Static headers merged once per Pool in the constructor; only the
+		// dynamic per-request EventSource headers merge per call below.
+		const headers = this.keyHeaders[keyIndex];
 		if (mode === "http") {
 			if (!this.config.url) {
 				throw new Error(
 					`Pool "${this.name}": url is required for http transport`,
 				);
 			}
-			const headers = { ...this.config.headers, ...keyEntry };
 			return new StreamableHTTPClientTransport(new URL(this.config.url), {
 				requestInit: { headers },
 			});
@@ -610,7 +671,6 @@ export class Pool {
 					`Pool "${this.name}": url is required for sse transport`,
 				);
 			}
-			const headers = { ...this.config.headers, ...keyEntry };
 			return new SSEClientTransport(new URL(this.config.url), {
 				requestInit: { headers },
 				eventSourceInit: {
@@ -634,17 +694,16 @@ export class Pool {
 			command: this.config.command,
 			args: this.config.args ?? [],
 			env: {
-				...process.env,
+				...this.baseEnv,
 				...this.config.env,
-				...keyEntry,
+				...this.config.keys[keyIndex],
 			} as Record<string, string>,
 			cwd: this.config.cwd,
 		});
 	}
 
 	private async spawnUpstream(keyIndex: number): Promise<void> {
-		const keyEntry = this.config.keys[keyIndex];
-		const transport = this.createTransport(keyEntry);
+		const transport = this.createTransport(keyIndex);
 
 		const client = new Client(
 			{ name: "mcp-pool", version: "0.1.0" },
@@ -718,28 +777,36 @@ export class Pool {
 			onTimeout?.();
 		}
 
+		// Hash-gated mismatch checks: the first fetch stores one canonical
+		// hash per catalog; failover serializes only the new catalog and
+		// compares. The comparison IS the gate — nothing is skipped. The
+		// per-item diff runs only to build the error message on mismatch.
+		const toolHash = hashToolCatalog(tools);
 		if (this.cachedTools.length > 0) {
-			const mismatch = findToolMismatch(this.cachedTools, tools);
-			if (mismatch) {
+			if (toolHash !== this.toolCatalogHash) {
+				const mismatch = findToolMismatch(this.cachedTools, tools);
 				await client.close();
 				throw new Error(
-					`Pool "${this.name}" key ${keyIndex} tools mismatch: ${mismatch}`,
+					`Pool "${this.name}" key ${keyIndex} tools mismatch: ${mismatch ?? "catalog changed"}`,
 				);
 			}
 		} else {
 			this.cachedTools = tools;
+			this.toolCatalogHash = toolHash;
 		}
 
+		const promptHash = hashPromptCatalog(prompts);
 		if (this.cachedPrompts.length > 0) {
-			const mismatch = findPromptMismatch(this.cachedPrompts, prompts);
-			if (mismatch) {
+			if (promptHash !== this.promptCatalogHash) {
+				const mismatch = findPromptMismatch(this.cachedPrompts, prompts);
 				await client.close();
 				throw new Error(
-					`Pool "${this.name}" key ${keyIndex} prompts mismatch: ${mismatch}`,
+					`Pool "${this.name}" key ${keyIndex} prompts mismatch: ${mismatch ?? "catalog changed"}`,
 				);
 			}
 		} else {
 			this.cachedPrompts = prompts;
+			this.promptCatalogHash = promptHash;
 		}
 
 		if (this.cachedResources.length > 0) {
@@ -764,8 +831,16 @@ export class Pool {
 			}
 		} else {
 			this.cachedTemplates = templates;
+			this.templateMatchers = templates.map((t) =>
+				templateToRegExp(t.uriTemplate),
+			);
 		}
 
+		// Catalogs populate on first fetch and never change after (failover
+		// re-verifies them), so bump the revision on every successful spawn:
+		// memoized list caches observe availability this way, and a failover
+		// spawn costs at most one cheap rebuild.
+		this.listRevisionValue++;
 		this.client = client;
 		this.cursor = keyIndex;
 
@@ -896,4 +971,46 @@ function stringifyContent(content: unknown): string {
 			.join("\n");
 	}
 	return JSON.stringify(content);
+}
+
+/**
+ * Canonical catalog hash: sorted (name, schema) pairs in one JSON string.
+ * Equivalent to the findToolMismatch gate (same names, same schemas), but
+ * computed once per catalog instead of per-tool stringify on both sides.
+ */
+function hashToolCatalog(tools: Tool[]): string {
+	return JSON.stringify(
+		tools
+			.map(
+				(t) =>
+					[t.name, t.inputSchema] as [string, Tool["inputSchema"]],
+			)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+	);
+}
+
+/** Canonical catalog hash for prompts; equivalent to findPromptMismatch. */
+function hashPromptCatalog(prompts: Prompt[]): string {
+	return JSON.stringify(
+		prompts
+			.map((p) => [p.name, p.arguments ?? []] as [string, unknown])
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+	);
+}
+
+/**
+ * Compile a `uriTemplate` with `{param}` placeholders into a matcher for
+ * concrete URIs. Placeholders match one non-empty path segment-ish run;
+ * literal parts match exactly.
+ */
+function templateToRegExp(template: string): RegExp {
+	const src = template
+		.split(/(\{[^}]*\})/g)
+		.map((part) =>
+			part.startsWith("{")
+				? "[^/?#]+"
+				: part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+		)
+		.join("");
+	return new RegExp(`^${src}$`);
 }
