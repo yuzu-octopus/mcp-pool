@@ -21,6 +21,7 @@ import {
 } from "./ipc.js";
 import { log } from "./logger.js";
 import type { Pool } from "./pool.js";
+import { collectSecrets, redactSecrets } from "./redact.js";
 import { buildServer, startPools } from "./server.js";
 import { SocketTransport } from "./socket-transport.js";
 
@@ -246,13 +247,13 @@ function loadOrExit(path: string | undefined): LoadedConfig {
 	}
 }
 
-// Local redaction for daemon status writes; keep in sync if a shared helper lands elsewhere.
-export function redactSecrets(message: string): string {
-	return message.replace(new RegExp("sk-[A-Za-z0-9_-]{8,}", "g"), "[redacted]").replace(new RegExp("Bearer[ \t]+[^ \t\r\n\"'}]+", "gi"), "Bearer [redacted]").replace(new RegExp("api[_-]?key[\"' \t:=]+[^ \t\r\n\"'},;]+", "gi"), "[redacted]").replace(new RegExp("-----BEGIN [A-Z ]+-----[^]*?-----END [A-Z ]+-----", "g"), "[redacted]");
-}
+// Daemon status writes redact exact configured secrets (value-based, no patterns).
 
 // Stream helper keeps close-after-handoff exact when the upstream body errors.
-export function pipedBodyWithFinish(body: ReadableStream<Uint8Array>, finish: () => void): ReadableStream<Uint8Array> {
+export function pipedBodyWithFinish(
+	body: ReadableStream<Uint8Array>,
+	finish: () => void,
+): ReadableStream<Uint8Array> {
 	const passthrough = new TransformStream({
 		flush: () => {
 			finish();
@@ -285,21 +286,17 @@ async function runProxy(loaded: LoadedConfig, verbose: boolean): Promise<void> {
 	const cleanupProxy = () => {
 		try {
 			process.stdin.unpipe(socket);
-		} catch {
-		}
+		} catch {}
 		try {
 			const s = process.stdin as unknown as { destroy?: () => void };
 			s.destroy?.();
-		} catch {
-		}
+		} catch {}
 		try {
 			socket.unpipe(process.stdout);
-		} catch {
-		}
+		} catch {}
 		try {
 			socket.end();
-		} catch {
-		}
+		} catch {}
 	};
 	await new Promise<void>((resolve) => {
 		// Agent going away (stdin EOF) ends the daemon-side session.
@@ -307,8 +304,7 @@ async function runProxy(loaded: LoadedConfig, verbose: boolean): Promise<void> {
 			stdinEnded = true;
 			try {
 				socket.end();
-			} catch {
-			}
+			} catch {}
 		});
 		const onSocketGone = () => {
 			if (stdinEnded) {
@@ -361,8 +357,11 @@ async function runDaemon(
 	try {
 		pools = await startPools(loaded.config.pools);
 	} catch (err) {
-		// Surface the real reason to whichever proxy is waiting on the socket.
-		writeStatus(paths, redactSecrets(err instanceof Error ? err.message : String(err)));
+		const secrets = Object.values(loaded.config.pools).flatMap(collectSecrets);
+		writeStatus(
+			paths,
+			redactSecrets(err instanceof Error ? err.message : String(err), secrets),
+		);
 		throw err;
 	}
 

@@ -19,6 +19,7 @@ import {
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./logger.js";
+import { collectSecrets, redactSecrets as scrubSecrets } from "./redact.js";
 import type { PoolConfig } from "./types.js";
 
 /** Upstream spawn/connect budget; a hung subprocess must not block startup. */
@@ -135,16 +136,7 @@ export class Pool {
 			...config.headers,
 			...keyEntry,
 		}));
-		const secrets = new Set<string>();
-		for (const keyEntry of config.keys) {
-			for (const value of Object.values(keyEntry)) secrets.add(value);
-		}
-		if (config.env) {
-			for (const value of Object.values(config.env)) secrets.add(value);
-		}
-		this.secretValues = [...secrets]
-			.filter((s) => s.length >= 4)
-			.sort((a, b) => b.length - a.length);
+		this.secretValues = collectSecrets(config);
 	}
 
 	async start(): Promise<void> {
@@ -803,11 +795,7 @@ export class Pool {
 	}
 
 	private redactSecrets(text: string): string {
-		let out = text;
-		for (const secret of this.secretValues) {
-			if (out.includes(secret)) out = out.split(secret).join("[redacted]");
-		}
-		return out;
+		return scrubSecrets(text, this.secretValues);
 	}
 
 	private createTransport(keyIndex: number): Transport {
