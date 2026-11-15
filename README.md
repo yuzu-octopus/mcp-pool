@@ -72,7 +72,7 @@ Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so r
 }
 ```
 
-Tool names are prefixed: `brave-search__brave_web_search`. The client calls the prefixed name; mcp-pool strips the prefix and routes to the correct upstream.
+Tool names are prefixed: `brave-search__brave_web_search`. The client calls the prefixed name; mcp-pool strips the prefix and routes to the correct upstream. Prompts, resources, and completions pass through the same way (resource URIs stay verbatim; the pool is resolved from the prefixed name). `logging/setLevel` applies to every connected upstream — logging level is shared, not per-session.
 
 Install builds a compiled binary via postinstall (`bun build --compile`); invocation is unchanged. With `--ignore-scripts`, the bin falls back to `node dist/index.js`.
 

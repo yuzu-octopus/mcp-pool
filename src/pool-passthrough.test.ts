@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -7,10 +7,7 @@ import { Pool } from "./pool.js";
 import { buildServer } from "./server.js";
 import type { PoolConfig } from "./types.js";
 
-function poolConfig(
-	poolName: string,
-	env: Record<string, string>,
-): PoolConfig {
+function poolConfig(poolName: string, env: Record<string, string>): PoolConfig {
 	return {
 		command: "bun",
 		args: ["run", "test/helper-server.ts"],
@@ -156,9 +153,9 @@ describe("resources passthrough", () => {
 		await alpha.start();
 		const { client, server } = await startClient([alpha]);
 		try {
-			await expect(
-				client.readResource({ uri: "exa://nope" }),
-			).rejects.toThrow(/Unknown resource/);
+			await expect(client.readResource({ uri: "exa://nope" })).rejects.toThrow(
+				/Unknown resource/,
+			);
 		} finally {
 			await closeAll([alpha], client, server);
 		}
@@ -231,14 +228,8 @@ describe("resources passthrough", () => {
 
 describe("prompts passthrough", () => {
 	test("prompts/list shows pool__ names from two pools", async () => {
-		const alpha = new Pool(
-			"alpha",
-			poolConfig("alpha", promptsEnv(SUMMARIZE)),
-		);
-		const beta = new Pool(
-			"beta",
-			poolConfig("beta", promptsEnv(TRANSLATE)),
-		);
+		const alpha = new Pool("alpha", poolConfig("alpha", promptsEnv(SUMMARIZE)));
+		const beta = new Pool("beta", poolConfig("beta", promptsEnv(TRANSLATE)));
 		await alpha.start();
 		await beta.start();
 		const { client, server } = await startClient([alpha, beta]);
@@ -249,9 +240,7 @@ describe("prompts passthrough", () => {
 			const result = await client.listPrompts();
 			const names = result.prompts.map((p) => p.name).sort();
 			expect(names).toEqual(["alpha__summarize", "beta__translate"]);
-			const summary = result.prompts.find(
-				(p) => p.name === "alpha__summarize",
-			);
+			const summary = result.prompts.find((p) => p.name === "alpha__summarize");
 			expect(summary?.description).toContain("[alpha]");
 		} finally {
 			await closeAll([alpha, beta], client, server);
@@ -315,7 +304,10 @@ describe("prompts passthrough", () => {
 	});
 
 	test("prompts capability absent when no pool offers prompts", async () => {
-		const plain = new Pool("plain", poolConfig("plain", { TEST_NO_PROMPTS: "1" }));
+		const plain = new Pool(
+			"plain",
+			poolConfig("plain", { TEST_NO_PROMPTS: "1" }),
+		);
 		await plain.start();
 		expect(plain.getPrompts()).toEqual([]);
 		const { client, server } = await startClient([plain]);

@@ -1,10 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import {
-	PromptListChangedNotificationSchema,
-	ResourceListChangedNotificationSchema,
-	ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import type {
 	CompleteRequest,
 	LoggingLevel,
@@ -13,6 +8,11 @@ import type {
 	ResourceTemplate,
 	ServerCapabilities,
 	Tool,
+} from "@modelcontextprotocol/sdk/types.js";
+import {
+	PromptListChangedNotificationSchema,
+	ResourceListChangedNotificationSchema,
+	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./logger.js";
 import type { PoolConfig } from "./types.js";
@@ -549,18 +549,12 @@ export class Pool {
 			templates = (handshake.templates?.resourceTemplates ??
 				[]) as ResourceTemplate[];
 			this.upstreamCapabilities = handshake.caps;
-			client.setNotificationHandler(
-				ToolListChangedNotificationSchema,
-				() => {
-					this.fireListChanged("tools");
-				},
-			);
-			client.setNotificationHandler(
-				PromptListChangedNotificationSchema,
-				() => {
-					this.fireListChanged("prompts");
-				},
-			);
+			client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+				this.fireListChanged("tools");
+			});
+			client.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+				this.fireListChanged("prompts");
+			});
 			client.setNotificationHandler(
 				ResourceListChangedNotificationSchema,
 				() => {

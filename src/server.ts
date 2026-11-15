@@ -4,8 +4,8 @@ import {
 	CompleteRequestSchema,
 	GetPromptRequestSchema,
 	ListPromptsRequestSchema,
-	ListResourceTemplatesRequestSchema,
 	ListResourcesRequestSchema,
+	ListResourceTemplatesRequestSchema,
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
 	SetLevelRequestSchema,
@@ -58,10 +58,7 @@ function splitPrefix(
 }
 
 /** Seed the URI→pool map from each pool's cached lists (post-start). */
-function seedUriMap(
-	uriToPool: Map<string, Pool>,
-	pools: Pool[],
-): void {
+function seedUriMap(uriToPool: Map<string, Pool>, pools: Pool[]): void {
 	for (const pool of pools) {
 		for (const resource of pool.getResources()) {
 			if (!uriToPool.has(resource.uri)) uriToPool.set(resource.uri, pool);
