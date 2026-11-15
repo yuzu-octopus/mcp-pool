@@ -79,7 +79,7 @@ Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so r
 
 Tool names are prefixed: `brave-search__brave_web_search`. The client calls the prefixed name; mcp-pool strips the prefix and routes to the correct upstream. Prompts, resources, and completions pass through the same way (resource URIs stay verbatim; the pool is resolved from the prefixed name). `logging/setLevel` applies to every connected upstream — logging level is shared, not per-session.
 
-Install builds a compiled binary via postinstall (`bun build --compile`); invocation is unchanged. With `--ignore-scripts`, the bin falls back to `node dist/index.js`.
+`bunx mcp-pool` installs a prebuilt platform binary via `optionalDependencies` (version-pinned `@yuzu-octopus/mcp-pool-<platform>`); override with `MCP_POOL_BINARY`. Rebuild it in place with `mcp-pool --rebuild` (needs `bun` + a writable install). Without a matching binary it runs `node dist/index.js` (same flags, slower cold start). Invocation is unchanged.
 
 Pass `--verbose` for per-request trace logs.
 
@@ -113,3 +113,7 @@ bun run smoke
 bun run build
 bun run check:package
 ```
+
+## Releases
+
+Every release publishes 8 packages in lockstep: the 7 `@yuzu-octopus/mcp-pool-<platform>` binaries first, then main (its `optionalDependencies` pins versions that must already exist). Bump all versions together with `scripts/bump-versions.sh <v>`. Primary path is operator-local: CI builds the binaries (`release-binaries.yml`), the operator downloads the artifacts and runs `scripts/publish-all.sh`. The GHP mirror carries the same 8 packages.
