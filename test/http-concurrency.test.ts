@@ -96,16 +96,19 @@ async function postMcp(
 	return { status: res.status, rpc: parseSseRpc(text) };
 }
 
-test(
-	"concurrent --http clients each get their own response",
-	async () => {
-		const directory = mkdtempSync(join(tmpdir(), "mcp-pool-http-"));
-		const configFile = join(directory, "config.yaml");
-		let child: ChildProcess | undefined;
+// Runs the 8-POST assertion against both server paths: Bun.serve (default)
+// and node:http (MCP_POOL_HTTP_NODE=1 escape). Both must behave identically.
+for (const mode of ["bun", "node"] as const) {
+	test(
+		`concurrent --http clients each get their own response (${mode})`,
+		async () => {
+			const directory = mkdtempSync(join(tmpdir(), `mcp-pool-http-${mode}-`));
+			const configFile = join(directory, "config.yaml");
+			let child: ChildProcess | undefined;
 
-		writeFileSync(
-			configFile,
-			`pools:
+			writeFileSync(
+				configFile,
+				`pools:
   alpha:
     command: bun
     args: ["run", "test/helper-server.ts"]
@@ -119,93 +122,102 @@ test(
       - { TEST_TOOLS_JSON: '${toolsJson("beta_tool")}' }
     rateLimitPatterns: ["rate_limit_exceeded"]
 `,
-		);
-
-		try {
-			const basePort = 18000 + (process.pid % 1000);
-			let port = -1;
-			for (const candidate of [basePort, basePort + 1]) {
-				child = spawn(
-					"bun",
-					[
-						"run",
-						"src/index.ts",
-						"--http",
-						"--port",
-						String(candidate),
-						"--config",
-						configFile,
-					],
-					{ cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
-				);
-				child.stderr?.resume();
-				if (await waitForHealth(candidate)) {
-					port = candidate;
-					break;
-				}
-				await stopChild(child);
-				child = undefined;
-			}
-			expect(port).not.toBe(-1);
-
-			const requests: Array<{
-				body: Record<string, unknown>;
-				check: (rpc: RpcResponse) => void;
-			}> = [];
-			for (let i = 0; i < 4; i++) {
-				const id = 101 + i;
-				requests.push({
-					body: { jsonrpc: "2.0", id, method: "tools/list", params: {} },
-					check: (rpc) => {
-						expect(rpc.id).toBe(id);
-						const names = (rpc.result?.tools ?? []).map((t) => t.name);
-						expect(names).toContain("alpha__alpha_tool");
-						expect(names).toContain("beta__beta_tool");
-					},
-				});
-			}
-			for (const [index, pool, tool] of [
-				[0, "alpha", "alpha_tool"],
-				[1, "alpha", "alpha_tool"],
-				[0, "beta", "beta_tool"],
-				[1, "beta", "beta_tool"],
-			] as Array<[number, string, string]>) {
-				const id = pool === "alpha" ? 201 + index : 301 + index;
-				const marker = `${pool}-marker-${index}`;
-				requests.push({
-					body: {
-						jsonrpc: "2.0",
-						id,
-						method: "tools/call",
-						params: {
-							name: `${pool}__${tool}`,
-							arguments: { marker },
-						},
-					},
-					check: (rpc) => {
-						expect(rpc.id).toBe(id);
-						const text = rpc.result?.content?.[0]?.text ?? "";
-						expect(JSON.parse(text)).toEqual({ marker });
-					},
-				});
-			}
-
-			const results = await Promise.all(
-				requests.map(async (r) => ({
-					expected: r.body,
-					check: r.check,
-					actual: await postMcp(port, r.body),
-				})),
 			);
-			expect(results).toHaveLength(8);
-			for (const { check, actual } of results) {
-				expect(actual.status).toBe(200);
-				check(actual.rpc);
+
+			try {
+				const basePort =
+					18000 + (process.pid % 1000) + (mode === "node" ? 10 : 0);
+				let port = -1;
+				for (const candidate of [basePort, basePort + 1]) {
+					child = spawn(
+						"bun",
+						[
+							"run",
+							"src/index.ts",
+							"--http",
+							"--port",
+							String(candidate),
+							"--config",
+							configFile,
+						],
+						{
+							cwd: ROOT,
+							stdio: ["ignore", "pipe", "pipe"],
+							env: {
+								...process.env,
+								...(mode === "node" ? { MCP_POOL_HTTP_NODE: "1" } : {}),
+							},
+						},
+					);
+					child.stderr?.resume();
+					if (await waitForHealth(candidate)) {
+						port = candidate;
+						break;
+					}
+					await stopChild(child);
+					child = undefined;
+				}
+				expect(port).not.toBe(-1);
+
+				const requests: Array<{
+					body: Record<string, unknown>;
+					check: (rpc: RpcResponse) => void;
+				}> = [];
+				for (let i = 0; i < 4; i++) {
+					const id = 101 + i;
+					requests.push({
+						body: { jsonrpc: "2.0", id, method: "tools/list", params: {} },
+						check: (rpc) => {
+							expect(rpc.id).toBe(id);
+							const names = (rpc.result?.tools ?? []).map((t) => t.name);
+							expect(names).toContain("alpha__alpha_tool");
+							expect(names).toContain("beta__beta_tool");
+						},
+					});
+				}
+				for (const [index, pool, tool] of [
+					[0, "alpha", "alpha_tool"],
+					[1, "alpha", "alpha_tool"],
+					[0, "beta", "beta_tool"],
+					[1, "beta", "beta_tool"],
+				] as Array<[number, string, string]>) {
+					const id = pool === "alpha" ? 201 + index : 301 + index;
+					const marker = `${pool}-marker-${index}`;
+					requests.push({
+						body: {
+							jsonrpc: "2.0",
+							id,
+							method: "tools/call",
+							params: {
+								name: `${pool}__${tool}`,
+								arguments: { marker },
+							},
+						},
+						check: (rpc) => {
+							expect(rpc.id).toBe(id);
+							const text = rpc.result?.content?.[0]?.text ?? "";
+							expect(JSON.parse(text)).toEqual({ marker });
+						},
+					});
+				}
+
+				const results = await Promise.all(
+					requests.map(async (r) => ({
+						expected: r.body,
+						check: r.check,
+						actual: await postMcp(port, r.body),
+					})),
+				);
+				expect(results).toHaveLength(8);
+				for (const { check, actual } of results) {
+					expect(actual.status).toBe(200);
+					check(actual.rpc);
+				}
+			} finally {
+				if (child) await stopChild(child);
+				rmSync(directory, { recursive: true, force: true });
 			}
-		} finally {
-			if (child) await stopChild(child);
-			rmSync(directory, { recursive: true, force: true });
-		}
-	},
-	TEST_TIMEOUT_MS,
-);
+		},
+		TEST_TIMEOUT_MS,
+	);
+}
