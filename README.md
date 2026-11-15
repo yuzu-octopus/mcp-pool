@@ -66,7 +66,7 @@ Serves the pooled tools over MCP Streamable HTTP at `http://host:port/mcp`, so r
   "mcpServers": {
     "mcp-pool": {
       "command": "bunx",
-      "args": ["mcp-pool@0.2.0", "--config", "/path/to/mcp-pool.yaml"]
+      "args": ["mcp-pool@0.3.0", "--config", "/path/to/mcp-pool.yaml"]
     }
   }
 }
