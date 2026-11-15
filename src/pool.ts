@@ -1,6 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type {
 	CompleteRequest,
 	LoggingLevel,
@@ -149,11 +152,7 @@ export class Pool {
 					UNFLAGGED_ERROR_PREFIX.test(stringifyContent(result.content))
 				) {
 					const errorText = stringifyContent(result.content);
-					const isRateLimited = this.config.rateLimitPatterns.some((pat) =>
-						new RegExp(pat).test(errorText),
-					);
-
-					if (isRateLimited) {
+					if (this.matchesRateLimit(errorText)) {
 						await this.withSwap(() =>
 							this.markRateLimited(cooldownSec, prepared),
 						);
@@ -165,7 +164,14 @@ export class Pool {
 
 				return result;
 			} catch (err) {
-				await this.withSwap(() => this.markFailed(err, prepared));
+				const errText = err instanceof Error ? err.message : String(err);
+				if (this.matchesRateLimit(errText)) {
+					await this.withSwap(() =>
+						this.markRateLimited(cooldownSec, prepared),
+					);
+				} else {
+					await this.withSwap(() => this.markFailed(err, prepared));
+				}
 			}
 		}
 
@@ -582,14 +588,66 @@ export class Pool {
 		await this.closeCurrent();
 	}
 
-	private async spawnUpstream(keyIndex: number): Promise<void> {
-		const envVars = this.config.keys[keyIndex];
-		const transport = new StdioClientTransport({
+	private matchesRateLimit(text: string): boolean {
+		return this.config.rateLimitPatterns.some((pat) =>
+			new RegExp(pat).test(text),
+		);
+	}
+
+	private createTransport(keyEntry: Record<string, string>): Transport {
+		const mode = this.config.transport ?? "stdio";
+		if (mode === "http") {
+			if (!this.config.url) {
+				throw new Error(
+					`Pool "${this.name}": url is required for http transport`,
+				);
+			}
+			const headers = { ...this.config.headers, ...keyEntry };
+			return new StreamableHTTPClientTransport(new URL(this.config.url), {
+				requestInit: { headers },
+			});
+		}
+		if (mode === "sse") {
+			if (!this.config.url) {
+				throw new Error(
+					`Pool "${this.name}": url is required for sse transport`,
+				);
+			}
+			const headers = { ...this.config.headers, ...keyEntry };
+			return new SSEClientTransport(new URL(this.config.url), {
+				requestInit: { headers },
+				eventSourceInit: {
+					fetch: (input, init) =>
+						fetch(input, {
+							...init,
+							headers: {
+								...Object.fromEntries(new Headers(init?.headers).entries()),
+								...headers,
+							},
+						}),
+				},
+			});
+		}
+		if (!this.config.command) {
+			throw new Error(
+				`Pool "${this.name}": command is required for stdio transport`,
+			);
+		}
+		return new StdioClientTransport({
 			command: this.config.command,
-			args: this.config.args,
-			env: { ...process.env, ...envVars } as Record<string, string>,
+			args: this.config.args ?? [],
+			env: {
+				...process.env,
+				...this.config.env,
+				...keyEntry,
+			} as Record<string, string>,
 			cwd: this.config.cwd,
 		});
+	}
+
+	private async spawnUpstream(keyIndex: number): Promise<void> {
+		const keyEntry = this.config.keys[keyIndex];
+		const transport = this.createTransport(keyEntry);
 
 		const client = new Client(
 			{ name: "mcp-pool", version: "0.1.0" },

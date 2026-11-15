@@ -1,6 +1,13 @@
+export type UpstreamTransport = "stdio" | "http" | "sse";
+
 export interface PoolConfig {
-	command: string;
-	args: string[];
+	transport?: UpstreamTransport;
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	url?: string;
+	headers?: Record<string, string>;
 	keys: Record<string, string>[];
 	cooldownSeconds?: number;
 	rateLimitPatterns: string[];
@@ -9,7 +16,6 @@ export interface PoolConfig {
 		errorPatterns: string[];
 		delaysMs: number[];
 	};
-	cwd?: string;
 }
 
 export interface ConfigFile {

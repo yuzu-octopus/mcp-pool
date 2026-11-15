@@ -20,12 +20,17 @@ MCP proxy that pools multiple API keys for rate-limited upstream MCP servers. Sp
 ```yaml
 pools:
   <name>:
-    command: string           # required
-    args: string[]
+    command?: string         # required for stdio
+    args?: string[]          # stdio only
+    transport?: "stdio" | "http" | "sse"  # default "stdio"; http/sse use url + headers
+    url?: string             # required for http/sse
+    headers?: Record<string,string>  # merged under per-key entries for http/sse
+    env?: Record<string,string>      # extra env for stdio upstreams
     keys: Record<string,string>[]  # at least 1; literal or ${VAR} values
     rateLimitPatterns: string[]  # required, at least 1, all valid regex
     cooldownSeconds?: number   # seconds a rate-limited key is skipped; defaults to 300
-    cwd?: string
+    cwd?: string               # stdio only
+    transientRetry?: { tools: string[]; errorPatterns: string[]; delaysMs: number[] }  # opt-in same-key retries, up to 5 delays of 0-10000ms
 ```
 
 Config paths (first found wins): `--config <path>`, `./mcp-pool.yaml`, `./.mcp-pool.yaml`, `~/.config/mcp-pool/mcp-pool.yaml`.
