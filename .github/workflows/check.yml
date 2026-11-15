@@ -23,6 +23,17 @@ jobs:
       - run: bun run build
       - run: bun run check:package
 
+  compile-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun build --compile src/index.ts --outfile /tmp/mcp-pool-ci --minify
+      - run: printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0.0.0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /tmp/mcp-pool-ci --local --config test/smoke.yaml | grep -q smoke__
+
   generate-project-page:
     needs: verify
     runs-on: ubuntu-latest

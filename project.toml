@@ -79,6 +79,7 @@ EOF
 
 # Run it
 bunx mcp-pool
+# Install builds a compiled binary via postinstall; invocation is unchanged.
 """
 
 [[sections]]
