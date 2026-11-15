@@ -7,6 +7,10 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
  * SDK's stdio transport (newline-delimited JSON), so each connection the daemon
  * accepts is a complete MCP session it can hand to its own Server.
  */
+
+// Bound on bytes buffered without a newline; past it call onerror and destroy.
+export const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
+
 export class SocketTransport implements Transport {
 	private readonly socket: Socket;
 	private chunks: Buffer[] = [];
@@ -33,6 +37,7 @@ export class SocketTransport implements Transport {
 		this.socket.on("data", (chunk: Buffer) => this.onData(chunk));
 		this.socket.on("error", (err: Error) => this.onerror?.(err));
 		this.socket.on("close", () => {
+			if (this.closed) return;
 			this.closed = true;
 			this.onclose?.();
 		});
@@ -52,15 +57,24 @@ export class SocketTransport implements Transport {
 
 	async close(): Promise<void> {
 		if (this.closed) return;
-		this.socket.destroy();
 		this.closed = true;
+		this.socket.destroy();
 		this.onclose?.();
 	}
 
 	private onData(chunk: Buffer): void {
 		if (chunk.length === 0) return;
+		if (this.closed) return;
 		this.chunks.push(chunk);
 		this.bufferedBytes += chunk.length;
+		if (this.bufferedBytes > MAX_BUFFERED_BYTES) {
+			this.chunks = [];
+			this.bufferedBytes = 0;
+			this.skipBytes = 0;
+			this.onerror?.(new Error("message exceeds 32MB buffer; destroying connection"));
+			this.socket.destroy();
+			return;
+		}
 
 		for (;;) {
 			const newlineAt = this.indexOfNewline();
