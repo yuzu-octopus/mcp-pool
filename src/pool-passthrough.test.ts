@@ -858,3 +858,30 @@ describe("transient retries (007-B)", () => {
 		expect(spawned).toEqual([0, 1]);
 	});
 });
+
+describe("perf quick-wins (F5)", () => {
+	test("proxied tool call with verbose off emits no route log on stderr", async () => {
+		const alpha = new Pool("alpha", poolConfig("alpha", {}));
+		await alpha.start();
+		const lines: string[] = [];
+		const originalError = console.error;
+		console.error = (...args: Parameters<typeof console.error>) => {
+			lines.push(args.map((arg) => String(arg)).join(" "));
+		};
+		try {
+			const { client, server } = await startClient([alpha]);
+			try {
+				const result = await client.callTool({
+					name: "alpha__echo",
+					arguments: { message: "hi" },
+				});
+				expect(JSON.stringify(result)).toContain("hi");
+			} finally {
+				await closeAll([alpha], client, server);
+			}
+		} finally {
+			console.error = originalError;
+		}
+		expect(lines.some((line) => line.includes('"route"'))).toBe(false);
+	});
+});
