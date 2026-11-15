@@ -16,4 +16,5 @@ try {
 	targetArgs = [join(dir, "..", "dist", "index.js"), ...args];
 }
 const result = spawnSync(target, targetArgs, { stdio: "inherit" });
+if (result.signal) process.kill(process.pid, result.signal);
 process.exit(result.status ?? 1);
