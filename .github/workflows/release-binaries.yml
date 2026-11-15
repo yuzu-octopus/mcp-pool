@@ -39,7 +39,7 @@ jobs:
             outfile: mcp-pool-darwin-x64
           - suffix: darwin-arm64
             target: bun-darwin-arm64
-            runner: macos-14
+            runner: macos-15
             outfile: mcp-pool-darwin-arm64
           - suffix: win32-x64
             target: bun-windows-x64
