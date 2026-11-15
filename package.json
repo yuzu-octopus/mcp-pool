@@ -26,7 +26,7 @@
 		"prepare": "bun run build",
 		"start": "node dist/index.js",
 		"dev": "bun --watch src/index.ts",
-		"test": "bun test src/ test/startup-cleanup.test.ts test/daemon-sharing.test.ts",
+		"test": "bun test src/ test/startup-cleanup.test.ts test/daemon-sharing.test.ts test/http-concurrency.test.ts",
 		"smoke": "bun run test/smoke-test.ts",
 		"check:package": "! npm pack --dry-run 2>&1 | grep -E 'dist/.*\\.test\\.(js|d\\.ts|js\\.map|d\\.ts\\.map)'",
 		"lint": "biome check",

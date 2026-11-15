@@ -16,6 +16,7 @@ import {
 	writeStatus,
 } from "./ipc.js";
 import { log } from "./logger.js";
+import { replyJsonError } from "./http-error.js";
 import { buildServer, startPools } from "./server.js";
 import { SocketTransport } from "./socket-transport.js";
 
@@ -209,15 +210,27 @@ async function runHttp(
 	host: string,
 ): Promise<void> {
 	const pools = await startPools(loaded.config.pools);
-	const transport = new StreamableHTTPServerTransport({
-		sessionIdGenerator: undefined,
-	});
-	await buildServer(pools, verbose).connect(transport);
 
 	const http = createHttpServer((req, res) => {
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		if (req.method === "POST" && url.pathname === "/mcp") {
-			void transport.handleRequest(req, res);
+			const server = buildServer(pools, verbose);
+			const transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: undefined,
+			});
+			void server
+				.connect(transport)
+				.then(() => transport.handleRequest(req, res))
+				.catch((err: unknown) => {
+					log({
+						level: "error",
+						event: "upstream_error",
+						pool: "http",
+						upstream: 0,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					replyJsonError(res, err);
+				});
 			return;
 		}
 		if (req.method === "GET" && url.pathname === "/health") {
