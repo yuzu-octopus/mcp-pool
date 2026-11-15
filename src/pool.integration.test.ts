@@ -468,3 +468,99 @@ describe("Pool HTTP transport (007-C)", () => {
 		expect(seenKeys).toEqual(["key-1"]);
 	});
 });
+describe("list_changed refresh and secret redaction (hardening)", () => {
+	test("notification re-lists the affected catalog from the live client", async () => {
+		const lateTools: Array<{ name: string; description: string }> = [];
+		const httpServer: HttpServer = createServer(async (req, res) => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of req) chunks.push(chunk as Buffer);
+			const rawBody = Buffer.concat(chunks).toString("utf-8");
+			const parsed = rawBody ? JSON.parse(rawBody) : undefined;
+			const mcp = new Server(
+				{ name: "mutable-mock", version: "0.1.0" },
+				{ capabilities: { tools: {} } },
+			);
+			mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+				tools: [
+					{
+						name: "echo",
+						description: "Echo",
+						inputSchema: { type: "object", properties: {} },
+					},
+					...lateTools.map((t) => ({
+						...t,
+						inputSchema: { type: "object", properties: {} },
+					})),
+				],
+			}));
+			const transport = new StreamableHTTPServerTransport({
+				sessionIdGenerator: undefined,
+			});
+			res.on("close", () => {
+				transport.close().catch(() => {});
+				mcp.close().catch(() => {});
+			});
+			await mcp.connect(transport);
+			await transport.handleRequest(req, res, parsed);
+		});
+		const ready = Promise.withResolvers<void>();
+		httpServer.listen(0, "127.0.0.1", () => ready.resolve());
+		await ready.promise;
+		const { port } = httpServer.address() as AddressInfo;
+		const pool = new Pool("refresh", {
+			transport: "http",
+			url: ["http:", "", "127.0.0.1:" + port, "mcp"].join("/"),
+			keys: [{ "x-api-key": "refresh-key" }],
+			rateLimitPatterns: ["rate_limit_exceeded"],
+		});
+		try {
+			await pool.start();
+			expect(pool.getTools().map((t) => t.name)).toEqual(["echo"]);
+			lateTools.push({ name: "brand-new-tool", description: "New" });
+			await pool.debugFireListChanged("tools");
+			expect(pool.getTools().map((t) => t.name)).toContain("brand-new-tool");
+		} finally {
+			await pool.close();
+			const done = Promise.withResolvers<void>();
+			httpServer.close((err) => (err ? done.reject(err) : done.resolve()));
+			await done.promise;
+		}
+	});
+
+	test("mismatch diagnostics redact configured secret values", async () => {
+		const secret = "redaction-fixture-secret-98765";
+		const lines: string[] = [];
+		const original = console.error;
+		console.error = (...values: unknown[]) => lines.push(values.join(" "));
+		const pool = new Pool(
+			"redact",
+			poolConfig({
+				keys: [
+					{
+						KEY: secret,
+						TEST_TOOLS_JSON: JSON.stringify([
+							{
+								name: "tool-" + secret,
+								inputSchema: { type: "object" as const },
+							},
+						]),
+						TEST_RATE_LIMIT_EVERY_N: "1",
+					},
+					{ KEY: secret },
+				],
+			}),
+		);
+		try {
+			await pool.start();
+			const result = await pool.routeCall("tool-" + secret, {});
+			assertCallResult(result);
+			expect(result.isError).toBe(true);
+			const dumped = lines.join("\n");
+			expect(dumped).not.toContain(secret);
+			expect(dumped).toContain("[redacted]");
+		} finally {
+			console.error = original;
+			await pool.close();
+		}
+	});
+});
