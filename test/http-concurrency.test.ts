@@ -231,7 +231,9 @@ for (const mode of ["bun", "node"] as const) {
 	test(
 		`large tool result round-trips intact (${mode})`,
 		async () => {
-			const directory = mkdtempSync(join(tmpdir(), `mcp-pool-http-big-${mode}-`));
+			const directory = mkdtempSync(
+				join(tmpdir(), `mcp-pool-http-big-${mode}-`),
+			);
 			const configFile = join(directory, "config.yaml");
 			let child: ChildProcess | undefined;
 

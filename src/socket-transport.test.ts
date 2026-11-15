@@ -48,7 +48,7 @@ function feed(socket: EventEmitter, chunks: (string | Buffer)[]): void {
 describe("SocketTransport framing", () => {
 	test("reassembles a message split across chunks", async () => {
 		const { socket, messages } = await setup();
-		const msg = { jsonrpc: "2.0", id: 1, method: "ping" };
+		const msg = { jsonrpc: "2.0", id: 1, method: "ping" } as const;
 		const raw = `${JSON.stringify(msg)}\n`;
 		feed(socket, [raw.slice(0, 5), raw.slice(5, 12), raw.slice(12)]);
 		expect(messages).toEqual([msg]);
@@ -56,8 +56,8 @@ describe("SocketTransport framing", () => {
 
 	test("handles multiple messages in one chunk and split boundaries", async () => {
 		const { socket, messages } = await setup();
-		const a = { jsonrpc: "2.0", id: 1, method: "a" };
-		const b = { jsonrpc: "2.0", id: 2, method: "b" };
+		const a = { jsonrpc: "2.0", id: 1, method: "a" } as const;
+		const b = { jsonrpc: "2.0", id: 2, method: "b" } as const;
 		const raw = `${JSON.stringify(a)}\n${JSON.stringify(b)}\n`;
 		feed(socket, [raw.slice(0, raw.length - 3), raw.slice(raw.length - 3)]);
 		expect(messages).toEqual([a, b]);
@@ -65,7 +65,7 @@ describe("SocketTransport framing", () => {
 
 	test("skips empty lines and reports invalid JSON via onerror", async () => {
 		const { socket, messages, errors } = await setup();
-		const msg = { jsonrpc: "2.0", id: 3, method: "ok" };
+		const msg = { jsonrpc: "2.0", id: 3, method: "ok" } as const;
 		feed(socket, [`\n   \n${JSON.stringify(msg)}\n{nope}\n`]);
 		expect(messages).toEqual([msg]);
 		expect(errors).toHaveLength(1);
@@ -73,7 +73,7 @@ describe("SocketTransport framing", () => {
 
 	test("keeps multibyte characters split across chunks intact", async () => {
 		const { socket, messages } = await setup();
-		const msg = { jsonrpc: "2.0", id: 4, method: "emoji-😀-✓-测试" };
+		const msg = { jsonrpc: "2.0", id: 4, method: "emoji-😀-✓-测试" } as const;
 		const raw = Buffer.from(`${JSON.stringify(msg)}\n`, "utf8");
 		// 1-byte chunks force splits inside multibyte sequences.
 		feed(
@@ -90,7 +90,7 @@ describe("SocketTransport framing", () => {
 			id: 5,
 			method: "bulk",
 			params: { blob: "x".repeat(1024 * 1024 + 123), tail: "😀".repeat(1000) },
-		};
+		} as const;
 		const raw = Buffer.from(`${JSON.stringify(msg)}\n`, "utf8");
 		expect(raw.length).toBeGreaterThan(1024 * 1024);
 		// Odd chunk size misaligns with message and multibyte boundaries.

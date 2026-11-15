@@ -382,6 +382,7 @@ async function runBunHttp(
 						closed = true;
 						mcp.close().catch(() => {});
 					};
+					req.signal.addEventListener("abort", finish, { once: true });
 					if (!upstreamRes.body) {
 						finish();
 						return new Response(null, {
@@ -391,9 +392,6 @@ async function runBunHttp(
 					}
 					const passthrough = new TransformStream({
 						flush: () => {
-							finish();
-						},
-						cancel: () => {
 							finish();
 						},
 					});
