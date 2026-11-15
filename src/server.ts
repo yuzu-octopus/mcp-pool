@@ -371,13 +371,15 @@ function createPoolSetHandlers(state: PoolSetState) {
 				);
 			}
 
-			log({
-				level: "info",
-				event: "route_prompt",
-				pool: split.poolName,
-				prompt: split.short,
-				upstream: -1,
-			});
+			if (state.verbose) {
+				log({
+					level: "info",
+					event: "route_prompt",
+					pool: split.poolName,
+					prompt: split.short,
+					upstream: -1,
+				});
+			}
 
 			const result = await pool.routePrompt(
 				split.short,
@@ -408,13 +410,15 @@ function createPoolSetHandlers(state: PoolSetState) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
 
-			log({
-				level: "info",
-				event: "route_resource",
-				pool: pool.name,
-				uri: request.params.uri,
-				upstream: -1,
-			});
+			if (state.verbose) {
+				log({
+					level: "info",
+					event: "route_resource",
+					pool: pool.name,
+					uri: request.params.uri,
+					upstream: -1,
+				});
+			}
 
 			const result = await pool.routeRead(request.params.uri);
 			if ("isError" in result && result.isError) {
@@ -432,13 +436,15 @@ function createPoolSetHandlers(state: PoolSetState) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
 
-			log({
-				level: "info",
-				event: "route_resource",
-				pool: pool.name,
-				uri: `subscribe:${request.params.uri}`,
-				upstream: -1,
-			});
+			if (state.verbose) {
+				log({
+					level: "info",
+					event: "route_resource",
+					pool: pool.name,
+					uri: `subscribe:${request.params.uri}`,
+					upstream: -1,
+				});
+			}
 
 			const err = await pool.routeSubscribe(request.params.uri);
 			if (err) {
@@ -456,13 +462,15 @@ function createPoolSetHandlers(state: PoolSetState) {
 				throw new Error(`Unknown resource: "${request.params.uri}"`);
 			}
 
-			log({
-				level: "info",
-				event: "route_resource",
-				pool: pool.name,
-				uri: `unsubscribe:${request.params.uri}`,
-				upstream: -1,
-			});
+			if (state.verbose) {
+				log({
+					level: "info",
+					event: "route_resource",
+					pool: pool.name,
+					uri: `unsubscribe:${request.params.uri}`,
+					upstream: -1,
+				});
+			}
 
 			const err = await pool.routeUnsubscribe(request.params.uri);
 			if (err) {
@@ -485,13 +493,15 @@ function createPoolSetHandlers(state: PoolSetState) {
 				if (!pool) {
 					throw new Error(`Unknown pool: "${split.poolName}"`);
 				}
-				log({
-					level: "info",
-					event: "route_complete",
-					pool: pool.name,
-					ref: ref.name,
-					upstream: -1,
-				});
+				if (state.verbose) {
+					log({
+						level: "info",
+						event: "route_complete",
+						pool: pool.name,
+						ref: ref.name,
+						upstream: -1,
+					});
+				}
 				const result = await pool.routeComplete({
 					...request.params,
 					ref: { type: "ref/prompt", name: split.short },
@@ -506,13 +516,15 @@ function createPoolSetHandlers(state: PoolSetState) {
 			if (!pool) {
 				throw new Error(`Unknown resource: "${ref.uri}"`);
 			}
-			log({
-				level: "info",
-				event: "route_complete",
-				pool: pool.name,
-				ref: ref.uri,
-				upstream: -1,
-			});
+			if (state.verbose) {
+				log({
+					level: "info",
+					event: "route_complete",
+					pool: pool.name,
+					ref: ref.uri,
+					upstream: -1,
+				});
+			}
 			const result = await pool.routeComplete(request.params);
 			if ("isError" in result && result.isError) {
 				throw new Error(result.content[0].text);
