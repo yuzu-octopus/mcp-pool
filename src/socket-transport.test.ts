@@ -142,5 +142,4 @@ describe("SocketTransport framing", () => {
 		await transport.close();
 		expect(calls).toBe(1);
 	});
-
 });

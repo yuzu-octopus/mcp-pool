@@ -71,7 +71,9 @@ export class SocketTransport implements Transport {
 			this.chunks = [];
 			this.bufferedBytes = 0;
 			this.skipBytes = 0;
-			this.onerror?.(new Error("message exceeds 32MB buffer; destroying connection"));
+			this.onerror?.(
+				new Error("message exceeds 32MB buffer; destroying connection"),
+			);
 			this.socket.destroy();
 			return;
 		}
