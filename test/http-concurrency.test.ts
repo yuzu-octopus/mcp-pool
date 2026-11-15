@@ -3,7 +3,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { replyJsonError } from "../src/http-error.js";
 const ROOT = join(import.meta.dir, "..");
 const HOST = "127.0.0.1";
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -209,3 +209,52 @@ test(
 	},
 	TEST_TIMEOUT_MS,
 );
+
+
+test("replyJsonError destroys instead of writing when headers already sent", () => {
+	const calls: string[] = [];
+	const sent = {
+		headersSent: true,
+		writableEnded: false,
+		writeHead(_status: number, _headers: Record<string, string>) {
+			calls.push("writeHead");
+		},
+		end(_body: string) {
+			calls.push("end");
+		},
+		destroy() {
+			calls.push("destroy");
+		},
+	};
+	replyJsonError(sent, new Error("boom"));
+	expect(calls).toEqual(["destroy"]);
+});
+
+test("replyJsonError writes 500 JSON on a fresh response", () => {
+	const calls: string[] = [];
+	let status = 0;
+	let body = "";
+	const fresh = {
+		headersSent: false,
+		writableEnded: false,
+		writeHead(s: number, _headers: Record<string, string>) {
+			status = s;
+			calls.push("writeHead");
+		},
+		end(b: string) {
+			body = b;
+			calls.push("end");
+		},
+		destroy() {
+			calls.push("destroy");
+		},
+	};
+	replyJsonError(fresh, new Error("boom"));
+	expect(status).toBe(500);
+	expect(calls).toEqual(["writeHead", "end"]);
+	expect(JSON.parse(body)).toEqual({
+		jsonrpc: "2.0",
+		error: { code: -32000, message: "Error: boom" },
+		id: null,
+	});
+});

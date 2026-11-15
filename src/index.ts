@@ -16,6 +16,7 @@ import {
 	writeStatus,
 } from "./ipc.js";
 import { log } from "./logger.js";
+import { replyJsonError } from "./http-error.js";
 import { buildServer, startPools } from "./server.js";
 import { SocketTransport } from "./socket-transport.js";
 
@@ -221,14 +222,14 @@ async function runHttp(
 				.connect(transport)
 				.then(() => transport.handleRequest(req, res))
 				.catch((err: unknown) => {
-					res.writeHead(500, { "content-type": "application/json" });
-					res.end(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							error: { code: -32000, message: String(err) },
-							id: null,
-						}),
-					);
+					log({
+						level: "error",
+						event: "upstream_error",
+						pool: "http",
+						upstream: 0,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					replyJsonError(res, err);
 				});
 			return;
 		}
@@ -245,7 +246,6 @@ async function runHttp(
 
 	await new Promise<void>((resolve) => http.listen(port, host, resolve));
 	log({ level: "info", event: "upstream_start", pool: "http", keyIndex: 0 });
-	console.error(`mcp-pool http listening on ${host}:${port}`);
 
 	const shutdown = () => {
 		http.close();
