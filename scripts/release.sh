@@ -8,11 +8,10 @@ V="${1:?usage: scripts/release.sh <version>}"
 rm -rf dist-bin
 scripts/bump-versions.sh "$V"
 bun install
-rm -rf ./dist-bin
-scripts/build-binaries.sh "$V" ./dist-bin
+scripts/build-binaries.sh "$V" dist-bin
 scripts/gate.sh
 git add -A
 git commit -m "chore: release $V"
-git tag "$V"
-git push origin main "$V"
-echo "tagged $V. next: scripts/publish-all.sh"
+git tag "v$V"
+git push origin main "v$V"
+echo "tagged v$V. next: scripts/publish-all.sh"
