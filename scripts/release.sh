@@ -5,7 +5,7 @@
 # run scripts/publish-all.sh next.
 set -eu
 V="${1:?usage: scripts/release.sh <version>}"
-cd -- "$(dirname -- "$0")/.."
+rm -rf dist-bin
 scripts/bump-versions.sh "$V"
 bun install
 rm -rf ./dist-bin

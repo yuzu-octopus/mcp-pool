@@ -1,6 +1,6 @@
 {
 	"name": "mcp-pool",
-	"version": "0.5.2",
+	"version": "0.5.3",
 	"description": "MCP Key Pool Proxy — pool multiple API keys across upstream MCP servers",
 	"type": "module",
 	"bin": {
@@ -14,13 +14,13 @@
 		"README.md"
 	],
 	"optionalDependencies": {
-		"@yuzu-octopus/mcp-pool-darwin-arm64": "0.5.2",
-		"@yuzu-octopus/mcp-pool-darwin-x64": "0.5.2",
-		"@yuzu-octopus/mcp-pool-linux-arm64": "0.5.2",
-		"@yuzu-octopus/mcp-pool-linux-x64": "0.5.2",
-		"@yuzu-octopus/mcp-pool-linux-x64-musl": "0.5.2",
-		"@yuzu-octopus/mcp-pool-win32-arm64": "0.5.2",
-		"@yuzu-octopus/mcp-pool-win32-x64": "0.5.2"
+		"@yuzu-octopus/mcp-pool-darwin-arm64": "0.5.3",
+		"@yuzu-octopus/mcp-pool-darwin-x64": "0.5.3",
+		"@yuzu-octopus/mcp-pool-linux-arm64": "0.5.3",
+		"@yuzu-octopus/mcp-pool-linux-x64": "0.5.3",
+		"@yuzu-octopus/mcp-pool-linux-x64-musl": "0.5.3",
+		"@yuzu-octopus/mcp-pool-win32-arm64": "0.5.3",
+		"@yuzu-octopus/mcp-pool-win32-x64": "0.5.3"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.6.0",
