@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths-ignore:
       - "docs/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
   workflow_dispatch:
 
 jobs:
@@ -145,28 +149,37 @@ jobs:
           });"
 
   generate-project-page:
+    # Fork PRs get a read-only token and could never push the result.
+    # The page regenerates on the main push after merge anyway.
+    if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libcairo2-dev fonts-jetbrains-mono
       - name: Install generator dependencies
-        run: pip install uv && uv pip install --system jinja2 pillow cairosvg
+        run: pip install uv && uv pip install --system jinja2==3.1.6 pillow==13.0.0 cairosvg==2.9.1
       - name: Fetch generator
+        env:
+          GENPAGE_SHA: 3d60f412ee385bd06bab7bfd7f61e58e79ecffed9e376de56475958d5af4424f
+          TEMPLATE_SHA: 939679d8cb8b171914420994170dba93336e1bded5c8bdee1e2505b7334e9b91
+          PROJECTSITE_REV: a3c7e1c7c52f6996af2dfe3b573d14ff808dd5fd
         run: |
           mkdir -p /tmp/projectsite
           curl --fail --location --silent --show-error \
-            https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/main/genpage.py \
+            "https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/${PROJECTSITE_REV}/genpage.py" \
             -o /tmp/projectsite/genpage.py
           curl --fail --location --silent --show-error \
-            https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/main/template.html.j2 \
+            "https://raw.githubusercontent.com/yuzu-octopus/ProjectSite/${PROJECTSITE_REV}/template.html.j2" \
             -o /tmp/projectsite/template.html.j2
+          echo "${GENPAGE_SHA}  /tmp/projectsite/genpage.py" | sha256sum --check --
+          echo "${TEMPLATE_SHA}  /tmp/projectsite/template.html.j2" | sha256sum --check --
       - name: Generate project page
         run: python /tmp/projectsite/genpage.py --input project.toml --output docs/index.html
       - name: Commit generated page

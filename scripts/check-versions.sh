@@ -8,9 +8,21 @@ set -eu
 cd -- "$(dirname -- "$0")/.."
 bun -e '
 	const root = (await Bun.file("package.json").json());
-	const skew = Object.entries(root.optionalDependencies ?? {})
+	const pins = root.optionalDependencies ?? {};
+	const skew = Object.entries(pins)
 		.filter(([, v]) => v !== root.version)
 		.map(([name, v]) => `package.json pins ${name}@${v}`);
+	// Family membership: every platform dir needs a pin and vice versa.
+	// Values can match while the sets drift (added/removed platform).
+	const dirs = new Set(
+		new Bun.Glob("platform/*/package.json")
+			.scanSync(".")
+			.map((f) => `@yuzu-octopus/mcp-pool-${f.split("/")[1]}`),
+	);
+	for (const name of Object.keys(pins))
+		if (!dirs.has(name)) skew.push(`package.json pins ${name} with no platform dir`);
+	for (const name of dirs)
+		if (!(name in pins)) skew.push(`platform dir for ${name} has no pin`);
 	for (const f of new Bun.Glob("platform/*/package.json").scanSync(".")) {
 		const { version } = await Bun.file(f).json();
 		if (version !== root.version) skew.push(`${f} is ${version}`);

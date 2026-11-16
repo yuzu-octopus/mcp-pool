@@ -2,14 +2,13 @@ name: Release binaries
 
 # Tag-triggered platform-binary release. Builds one binary per matrix leg on
 # its native runner (reproducibility over minutes), uploads artifacts +
-# attestations, then publishes the 7 platform packages + main to npmjs with
-# Sigstore provenance (esbuild/biome-grade supply chain).
+# attestations, attaches them to the GitHub Release, then publishes the 7
+# platform packages + main to npmjs with Sigstore provenance (esbuild/biome-grade
+# supply chain).
 #
-# Release shape (operator decision 2026-11-15): BOTH paths are wired.
-# PRIMARY is operator-local: download the artifacts from the CI run and run
-# scripts/publish-all.sh (no tokens on GitHub, standing rule). FALLBACK is
-# the publish job below (OIDC trusted publishing + --provenance); it needs
-# the one-time npm trusted-publisher setup for each of the 8 package names.
+# Release shape: CI publishes via OIDC trusted publishing (no tokens on
+# GitHub, standing rule). scripts/publish-all.sh is the operator-local
+# backup for when CI cannot publish.
 
 on:
   push:
@@ -53,16 +52,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - run: bun install --frozen-lockfile
       - run: bun build --compile --minify --target ${{ matrix.target }} src/index.ts --outfile ${{ matrix.outfile }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.outfile }}
           path: ${{ matrix.outfile }}
 
   publish:
+    # Tag push is the release. A manual dispatch runs the build for testing
+    # but must never publish a branch snapshot over a real version.
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -70,17 +72,17 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/download-artifact@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist-bin/
           merge-multiple: true
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: "dist-bin/*"
       - name: Stage binaries into platform packages
