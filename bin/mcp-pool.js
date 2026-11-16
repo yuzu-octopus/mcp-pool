@@ -26,31 +26,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // (bun documents bun-linux-arm64 only) and falls through to dist/.
 // Value is [optionalDependency package, binary file in its bin/].
 export const TABLE = {
-	"darwin-arm64-glibc": [
-		"@yuzu-octopus/mcp-pool-darwin-arm64",
-		"mcp-pool-darwin-arm64",
-	],
-	"darwin-x64-glibc": [
-		"@yuzu-octopus/mcp-pool-darwin-x64",
-		"mcp-pool-darwin-x64",
-	],
-	"linux-x64-glibc": ["@yuzu-octopus/mcp-pool-linux-x64", "mcp-pool-linux-x64"],
-	"linux-x64-musl": [
-		"@yuzu-octopus/mcp-pool-linux-x64-musl",
-		"mcp-pool-linux-x64-musl",
-	],
-	"linux-arm64-glibc": [
-		"@yuzu-octopus/mcp-pool-linux-arm64",
-		"mcp-pool-linux-arm64",
-	],
-	"win32-x64-glibc": [
-		"@yuzu-octopus/mcp-pool-win32-x64",
-		"mcp-pool-win32-x64.exe",
-	],
-	"win32-arm64-glibc": [
-		"@yuzu-octopus/mcp-pool-win32-arm64",
-		"mcp-pool-win32-arm64.exe",
-	],
+	"darwin-arm64-glibc": ["@yuzu-octopus/mcp-pool-darwin-arm64", "mcp-pool"],
+	"darwin-x64-glibc": ["@yuzu-octopus/mcp-pool-darwin-x64", "mcp-pool"],
+	"linux-x64-glibc": ["@yuzu-octopus/mcp-pool-linux-x64", "mcp-pool"],
+	"linux-x64-musl": ["@yuzu-octopus/mcp-pool-linux-x64-musl", "mcp-pool"],
+	"linux-arm64-glibc": ["@yuzu-octopus/mcp-pool-linux-arm64", "mcp-pool"],
+	"win32-x64-glibc": ["@yuzu-octopus/mcp-pool-win32-x64", "mcp-pool.exe"],
+	"win32-arm64-glibc": ["@yuzu-octopus/mcp-pool-win32-arm64", "mcp-pool.exe"],
 };
 // Platform key -> `bun build --compile --target` token. Same matrix as
 // scripts/build-binaries.sh; linux-arm64-musl is absent (bun ships no such

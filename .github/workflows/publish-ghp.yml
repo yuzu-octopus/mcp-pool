@@ -32,16 +32,16 @@ jobs:
         run: |
           stage() {
             mkdir -p "platform/$1/bin"
-            cp "/tmp/mcp-pool-bins/$2" "platform/$1/bin/$2"
-            chmod +x "platform/$1/bin/$2"
+            cp "/tmp/mcp-pool-bins/$2" "platform/$1/bin/$3"
+            chmod +x "platform/$1/bin/$3"
           }
-          stage linux-x64 mcp-pool-linux-x64
-          stage linux-x64-musl mcp-pool-linux-x64-musl
-          stage linux-arm64 mcp-pool-linux-arm64
-          stage darwin-x64 mcp-pool-darwin-x64
-          stage darwin-arm64 mcp-pool-darwin-arm64
-          stage win32-x64 mcp-pool-win32-x64.exe
-          stage win32-arm64 mcp-pool-win32-arm64.exe
+          stage linux-x64 mcp-pool-linux-x64 mcp-pool
+          stage linux-x64-musl mcp-pool-linux-x64-musl mcp-pool
+          stage linux-arm64 mcp-pool-linux-arm64 mcp-pool
+          stage darwin-x64 mcp-pool-darwin-x64 mcp-pool
+          stage darwin-arm64 mcp-pool-darwin-arm64 mcp-pool
+          stage win32-x64 mcp-pool-win32-x64.exe mcp-pool.exe
+          stage win32-arm64 mcp-pool-win32-arm64.exe mcp-pool.exe
       - name: Version equality gate (no skew across the family)
         run: scripts/check-versions.sh
       # Platform packages are already @yuzu-octopus-scoped: publish first,

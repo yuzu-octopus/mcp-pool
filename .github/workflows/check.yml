@@ -89,7 +89,7 @@ jobs:
       - name: Shim handshake (native binary via lookup)
         run: |
           mkdir -p /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin
-          cp /tmp/mcp-pool-bins/mcp-pool-linux-x64 /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin/
+          cp /tmp/mcp-pool-bins/mcp-pool-linux-x64 /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin/mcp-pool
           chmod +x /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/bin/*
           cp "$GITHUB_WORKSPACE/platform/linux-x64/package.json" /tmp/shim-probe/node_modules/@yuzu-octopus/mcp-pool-linux-x64/package.json
           cp "$GITHUB_WORKSPACE/bin/mcp-pool.js" /tmp/shim-probe/mcp-pool.js
