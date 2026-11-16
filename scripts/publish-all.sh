@@ -11,14 +11,7 @@
 set -eu
 cd -- "$(dirname -- "$0")/.."
 
-ROOT_VERSION="$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
-for d in platform/*/; do
-	V="$(F="$d/package.json" bun -e 'console.log((await Bun.file(process.env.F).json()).version)')"
-	[ "$V" = "$ROOT_VERSION" ] || {
-		echo "version skew: $d is $V, root is $ROOT_VERSION (run scripts/bump-versions.sh)"
-		exit 1
-	}
-done
+scripts/check-versions.sh
 
 stage() {
 	# $1 = platform dir, $2 = binary filename

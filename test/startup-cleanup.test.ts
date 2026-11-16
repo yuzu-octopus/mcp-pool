@@ -91,6 +91,54 @@ test("closes started pools when a later pool fails startup", async () => {
 	}
 });
 
+test("--local exits once the client closes stdin", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "mcp-pool-local-eof-"));
+	const configFile = join(directory, "config.yaml");
+	writeFileSync(
+		configFile,
+		`pools:
+  only:
+    command: bun
+    args: ["run", "test/helper-server.ts"]
+    keys:
+      - { KEY: "a" }
+    rateLimitPatterns: ["rate_limit_exceeded"]
+`,
+	);
+	const proc = Bun.spawn({
+		cmd: ["bun", "run", "src/index.ts", "--local", "--config", configFile],
+		cwd: join(import.meta.dir, ".."),
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "ignore",
+	});
+	try {
+		proc.stdin.write(
+			`${JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: {
+					protocolVersion: "2025-11-25",
+					capabilities: {},
+					clientInfo: { name: "eof", version: "0.0.0" },
+				},
+			})}\n`,
+		);
+		// First stdout chunk is the initialize reply: the session is live.
+		await proc.stdout.getReader().read();
+		proc.stdin.end();
+		const exit = await Promise.race([
+			proc.exited,
+			new Promise((r) => setTimeout(() => r("still running"), 5_000)),
+		]);
+		expect(exit).toBe(0);
+	} finally {
+		proc.kill();
+		rmSync(directory, { recursive: true, force: true });
+	}
+}, 15_000);
+
 test("--version prints package version to stdout and exits 0", () => {
 	const proc = Bun.spawnSync({
 		cmd: ["bun", "run", "src/index.ts", "--version"],

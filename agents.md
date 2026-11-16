@@ -46,7 +46,8 @@ Upstream `args` should be pinned (`args: ["-y", "tavily-mcp@0.2.22"]`); unpinned
 4. `Pool.routeCall()`: try current upstream → forward call → on rate-limit (error text matches `rateLimitPatterns`) → close current, advance to next key, spawn new upstream, retry
 5. Transport errors (crash/broken pipe) → same as rate-limit: close, advance, spawn, retry
 6. Non-rate-limit `isError` → return to client immediately, no retry
-7. Only the swap window is serialized (mutex); the in-flight `callTool` runs outside it so concurrent callers proceed in parallel
+7. JSON-RPC errors the upstream answers with (bad params, unknown prompt, missing resource) → relayed to the client with their code; the upstream stays up. Only closed connections and request timeouts count as transport errors
+8. Only the swap window is serialized (mutex); the in-flight `callTool` runs outside it so concurrent callers proceed in parallel
 
 ## Serving modes
 

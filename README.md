@@ -118,4 +118,4 @@ bun run check:package
 
 ## Releases
 
-Every release publishes 8 packages in lockstep: the 7 `@yuzu-octopus/mcp-pool-<platform>` binaries first, then main (its `optionalDependencies` pins versions that must already exist). Bump all versions together with `scripts/bump-versions.sh <v>`. Primary path is operator-local: CI builds the binaries (`release-binaries.yml`), the operator downloads the artifacts and runs `scripts/publish-all.sh`. The GHP mirror carries the same 8 packages.
+Every release publishes 8 packages in lockstep: the 7 `@yuzu-octopus/mcp-pool-<platform>` binaries first, then main (its `optionalDependencies` pins versions that must already exist). Bump all versions together with `scripts/bump-versions.sh <v>` (it moves main's `optionalDependencies` pins too); `scripts/check-versions.sh` gates every publish on that lockstep. Primary path is operator-local: CI builds the binaries (`release-binaries.yml`), the operator downloads the artifacts and runs `scripts/publish-all.sh`. The GHP mirror carries the same 8 packages.

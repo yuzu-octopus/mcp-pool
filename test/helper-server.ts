@@ -34,11 +34,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
 	CallToolRequestSchema,
 	CompleteRequestSchema,
+	ErrorCode,
 	GetPromptRequestSchema,
 	ListPromptsRequestSchema,
 	ListResourcesRequestSchema,
 	ListResourceTemplatesRequestSchema,
 	ListToolsRequestSchema,
+	McpError,
 	ReadResourceRequestSchema,
 	SetLevelRequestSchema,
 	SubscribeRequestSchema,
@@ -179,7 +181,11 @@ if (offerResources) {
 	server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 		const resource = getResources().find((r) => r.uri === request.params.uri);
 		if (!resource) {
-			throw new Error(`Unknown resource: "${request.params.uri}"`);
+			// Same reply the SDK's McpServer gives for a missing resource.
+			throw new McpError(
+				ErrorCode.InvalidParams,
+				`Resource ${request.params.uri} not found`,
+			);
 		}
 		return {
 			contents: [

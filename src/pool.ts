@@ -14,6 +14,8 @@ import type {
 	Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+	ErrorCode,
+	McpError,
 	PromptListChangedNotificationSchema,
 	ResourceListChangedNotificationSchema,
 	ToolListChangedNotificationSchema,
@@ -23,21 +25,7 @@ import { collectSecrets, redactSecrets as scrubSecrets } from "./redact.js";
 import type { PoolConfig } from "./types.js";
 
 /** Upstream spawn/connect budget; a hung subprocess must not block startup. */
-const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
-/** Per-tick Date.now() cache for cooldown comparisons: one clock sample is
- * shared by every check in the same tick instead of sampling per call. Reset
- * via microtask, so the next tick re-samples. Monotonic enough for cooldown
- * expiry; the warn-path toISOString below still uses a fresh Date. */
-let cachedTickNow = 0;
-function tickNow(): number {
-	if (cachedTickNow === 0) {
-		cachedTickNow = Date.now();
-		queueMicrotask(() => {
-			cachedTickNow = 0;
-		});
-	}
-	return cachedTickNow;
-}
+export const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
 
 type CallResult = {
 	content: Array<{ type: "text"; text: string }>;
@@ -115,13 +103,6 @@ export class Pool {
 		resources: false,
 	};
 	private listRefreshInFlight: Promise<void> | null = null;
-	// Fast-path flag for withSwap: true while no swap section is running or
-	// queued. Flipped synchronously, so exactly one contender sees idle.
-	private routeLockIdle = true;
-	// Queued slow-path waiters. Keeps the flag down across handoffs: while a
-	// waiter is queued or running, new callers must queue behind it instead
-	// of barging in on the fast path.
-	private routeLockWaiters = 0;
 
 	constructor(name: string, config: PoolConfig) {
 		this.name = name;
@@ -171,14 +152,7 @@ export class Pool {
 		args: Record<string, unknown>,
 		verbose?: boolean,
 	): Promise<unknown> {
-		if (!this.started) {
-			return {
-				content: [
-					{ type: "text" as const, text: `Pool "${this.name}" not started` },
-				],
-				isError: true,
-			};
-		}
+		if (!this.started) return notStartedError(this.name);
 
 		const maxKeys = this.config.keys.length;
 		const cooldownSec = this.config.cooldownSeconds ?? 300;
@@ -207,17 +181,15 @@ export class Pool {
 				);
 
 				const errorText = stringifyContent(result.content);
-				if (result.isError || UNFLAGGED_ERROR_PREFIX.test(errorText)) {
-					if (this.matchesRateLimit(errorText)) {
-						await this.withSwap(() =>
-							this.markRateLimited(cooldownSec, prepared),
-						);
-						continue;
-					}
-
-					return result;
+				if (
+					(result.isError || UNFLAGGED_ERROR_PREFIX.test(errorText)) &&
+					this.matchesRateLimit(errorText)
+				) {
+					await this.withSwap(() =>
+						this.markRateLimited(cooldownSec, prepared),
+					);
+					continue;
 				}
-
 				return result;
 			} catch (err) {
 				const errText = err instanceof Error ? err.message : String(err);
@@ -225,6 +197,8 @@ export class Pool {
 					await this.withSwap(() =>
 						this.markRateLimited(cooldownSec, prepared),
 					);
+				} else if (isUpstreamReply(err)) {
+					throw this.relayUpstreamReply(err);
 				} else {
 					await this.withSwap(() => this.markFailed(err, prepared));
 				}
@@ -251,7 +225,7 @@ export class Pool {
 				!result.isError ||
 				!policy?.tools.includes(toolName) ||
 				attempt >= policy.delaysMs.length ||
-				this.rateLimitRes.some((re) => re.test(errorText)) ||
+				this.matchesRateLimit(errorText) ||
 				!this.transientErrorRes?.some((re) => re.test(errorText))
 			)
 				return result;
@@ -279,109 +253,57 @@ export class Pool {
 		promptName: string,
 		args?: Record<string, string>,
 	): Promise<PromptResult | RouteError> {
-		if (!this.started) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pool "${this.name}" not started`,
-					},
-				],
-				isError: true,
-			};
-		}
-
-		const maxKeys = this.config.keys.length;
-		for (let attempt = 0; attempt < maxKeys; attempt++) {
-			const prepared = await this.withSwap(() => this.prepareNext());
-			if (prepared.kind === "skip") continue;
-
-			try {
-				const result = await prepared.client.getPrompt({
+		return this.route(
+			(client) =>
+				client.getPrompt({
 					name: promptName,
 					arguments: args,
-				});
-				return result as PromptResult;
-			} catch (err) {
-				// Prompts are not rate-limited reads: fail over once, then error.
-				await this.withSwap(() => this.markFailed(err, prepared));
-			}
-		}
-
-		return unavailableError(this.name, maxKeys);
+				}) as Promise<PromptResult>,
+		);
 	}
 
 	async routeRead(uri: string): Promise<ReadResult | RouteError> {
-		if (!this.started) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pool "${this.name}" not started`,
-					},
-				],
-				isError: true,
-			};
-		}
-
-		const maxKeys = this.config.keys.length;
-		for (let attempt = 0; attempt < maxKeys; attempt++) {
-			const prepared = await this.withSwap(() => this.prepareNext());
-			if (prepared.kind === "skip") continue;
-
-			try {
-				const result = await prepared.client.readResource({ uri });
-				return result as ReadResult;
-			} catch (err) {
-				// Reads are not rate-limited: fail over once, then error.
-				await this.withSwap(() => this.markFailed(err, prepared));
-			}
-		}
-
-		return unavailableError(this.name, maxKeys);
+		return this.route(
+			(client) => client.readResource({ uri }) as Promise<ReadResult>,
+		);
 	}
 
 	async routeSubscribe(uri: string): Promise<RouteError | null> {
-		if (!this.started) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pool "${this.name}" not started`,
-					},
-				],
-				isError: true,
-			};
-		}
-
-		const maxKeys = this.config.keys.length;
-		for (let attempt = 0; attempt < maxKeys; attempt++) {
-			const prepared = await this.withSwap(() => this.prepareNext());
-			if (prepared.kind === "skip") continue;
-
-			try {
-				await prepared.client.subscribeResource({ uri });
-				return null;
-			} catch (err) {
-				await this.withSwap(() => this.markFailed(err, prepared));
-			}
-		}
-
-		return unavailableError(this.name, maxKeys);
+		return this.route((client) =>
+			client.subscribeResource({ uri }).then(() => null),
+		);
 	}
 
 	async routeUnsubscribe(uri: string): Promise<RouteError | null> {
-		if (!this.started) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `Pool "${this.name}" not started`,
-					},
-				],
-				isError: true,
-			};
-		}
+		return this.route((client) =>
+			client.unsubscribeResource({ uri }).then(() => null),
+		);
+	}
+
+	async routeComplete(
+		params: CompleteRequest["params"],
+	): Promise<CompleteResult | RouteError> {
+		return this.route(
+			(client) => client.complete(params) as Promise<CompleteResult>,
+		);
+	}
+
+	async routeSetLevel(level: LoggingLevel): Promise<RouteError | null> {
+		return this.route((client) =>
+			client.setLoggingLevel(level).then(() => null),
+		);
+	}
+
+	/**
+	 * Runs one non-tool request on the current upstream. Transport failures
+	 * close it and fail over to the next key; an error the upstream itself
+	 * answers with is re-raised to the caller and the upstream stays up.
+	 * Only tool calls match rateLimitPatterns and put keys on cooldown.
+	 */
+	private async route<T>(
+		op: (client: Client) => Promise<T>,
+	): Promise<T | RouteError> {
+		if (!this.started) return notStartedError(this.name);
 
 		const maxKeys = this.config.keys.length;
 		for (let attempt = 0; attempt < maxKeys; attempt++) {
@@ -389,9 +311,9 @@ export class Pool {
 			if (prepared.kind === "skip") continue;
 
 			try {
-				await prepared.client.unsubscribeResource({ uri });
-				return null;
+				return await op(prepared.client);
 			} catch (err) {
+				if (isUpstreamReply(err)) throw this.relayUpstreamReply(err);
 				await this.withSwap(() => this.markFailed(err, prepared));
 			}
 		}
@@ -400,41 +322,29 @@ export class Pool {
 	}
 
 	/**
+	 * Re-raises an upstream's JSON-RPC error with its code and data intact.
+	 * McpError prefixes "MCP error <code>: " to the message; strip it so the
+	 * downstream client's own McpError does not print it twice.
+	 */
+	private relayUpstreamReply(err: McpError): McpError {
+		const message = err.message.replace(/^MCP error -?\d+: /, "");
+		return new McpError(err.code, this.redactSecrets(message), err.data);
+	}
+
+	/**
 	 * Serializes only the section that mutates cursor/cooldowns/client. The
 	 * in-flight callTool runs outside it.
 	 */
 	private async withSwap<T>(fn: () => T | Promise<T>): Promise<T> {
-		// Waiters guard the handoff: a releaser that wakes a queued caller
-		// must leave the flag down, otherwise an already-queued continuation
-		// positioned behind the releaser but ahead of the waiter would see
-		// idle and barge in on the fast path while the waiter also proceeds.
-		if (this.routeLockIdle && this.routeLockWaiters === 0) {
-			// Fast path: the lock is uncontended, so run inline without extra
-			// promise allocations or microtask hops. The flag flip is
-			// synchronous, so a concurrent caller can only take the queued
-			// path below; FIFO ordering is preserved through routeLock.
-			this.routeLockIdle = false;
-			const next = Promise.withResolvers<void>();
-			this.routeLock = next.promise;
-			try {
-				return await fn();
-			} finally {
-				if (this.routeLockWaiters === 0) this.routeLockIdle = true;
-				next.resolve();
-			}
-		}
-		this.routeLockWaiters++;
+		// FIFO promise chain: each section waits for the one queued before it.
 		const prev = this.routeLock;
-		const next = Promise.withResolvers<void>();
-		this.routeLock = next.promise;
+		const done = Promise.withResolvers<void>();
+		this.routeLock = done.promise;
+		await prev;
 		try {
-			await prev;
-			this.routeLockIdle = false;
 			return await fn();
 		} finally {
-			this.routeLockWaiters--;
-			if (this.routeLockWaiters === 0) this.routeLockIdle = true;
-			next.resolve();
+			done.resolve();
 		}
 	}
 
@@ -446,7 +356,7 @@ export class Pool {
 	private async prepareNext(): Promise<Prepared> {
 		const maxKeys = this.config.keys.length;
 
-		if (this.cooldowns[this.cursor] > tickNow()) {
+		if (this.cooldowns[this.cursor] > Date.now()) {
 			this.cursor = (this.cursor + 1) % maxKeys;
 			return { kind: "skip" };
 		}
@@ -484,7 +394,7 @@ export class Pool {
 		prepared: PreparedCall,
 	): Promise<void> {
 		const { keyIndex } = prepared;
-		this.cooldowns[keyIndex] = tickNow() + cooldownSec * 1000;
+		this.cooldowns[keyIndex] = Date.now() + cooldownSec * 1000;
 		log({
 			level: "warn",
 			event: "rate_limited",
@@ -516,59 +426,6 @@ export class Pool {
 			await this.closeCurrent();
 			this.cursor = (prepared.keyIndex + 1) % this.config.keys.length;
 		}
-	}
-
-	async routeComplete(
-		params: CompleteRequest["params"],
-	): Promise<CompleteResult | RouteError> {
-		if (!this.started) {
-			return unavailableError(this.name, this.config.keys.length);
-		}
-		const maxKeys = this.config.keys.length;
-		let lastError: string | null = null;
-		for (let attempt = 0; attempt < maxKeys; attempt++) {
-			const prepared = await this.withSwap(() => this.prepareNext());
-			if (prepared.kind === "skip") continue;
-			try {
-				const result = await prepared.client.complete(params);
-				return result as CompleteResult;
-			} catch (err) {
-				lastError = err instanceof Error ? err.message : String(err);
-				await this.withSwap(() => this.markFailed(err, prepared));
-			}
-		}
-		if (lastError) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: this.redactSecrets(
-							`All ${maxKeys} keys for '${this.name}' failed: ${lastError}`,
-						),
-					},
-				],
-				isError: true,
-			};
-		}
-		return unavailableError(this.name, this.config.keys.length);
-	}
-
-	async routeSetLevel(level: LoggingLevel): Promise<RouteError | null> {
-		if (!this.started) {
-			return unavailableError(this.name, this.config.keys.length);
-		}
-		const maxKeys = this.config.keys.length;
-		for (let attempt = 0; attempt < maxKeys; attempt++) {
-			const prepared = await this.withSwap(() => this.prepareNext());
-			if (prepared.kind === "skip") continue;
-			try {
-				await prepared.client.setLoggingLevel(level);
-				return null;
-			} catch (err) {
-				await this.withSwap(() => this.markFailed(err, prepared));
-			}
-		}
-		return unavailableError(this.name, this.config.keys.length);
 	}
 
 	/** Subscribe to upstream list_changed notifications for this pool. */
@@ -708,7 +565,7 @@ export class Pool {
 
 	private exhaustedError(): CallResult {
 		const maxKeys = this.config.keys.length;
-		const now = tickNow();
+		const now = Date.now();
 		const active = this.cooldowns.filter((c) => c > now);
 
 		log({
@@ -1014,6 +871,29 @@ export class Pool {
 			this.client = undefined;
 		}
 	}
+}
+
+function notStartedError(poolName: string): RouteError {
+	return {
+		content: [
+			{ type: "text" as const, text: `Pool "${poolName}" not started` },
+		],
+		isError: true,
+	};
+}
+
+/**
+ * True when the upstream answered with a JSON-RPC error (unknown prompt, bad
+ * params, missing resource): the connection is healthy and the error belongs
+ * to the caller. The SDK also reports closed connections and request
+ * timeouts as McpError; those stay transport failures and fail over.
+ */
+function isUpstreamReply(err: unknown): err is McpError {
+	return (
+		err instanceof McpError &&
+		err.code !== ErrorCode.ConnectionClosed &&
+		err.code !== ErrorCode.RequestTimeout
+	);
 }
 
 function unavailableError(poolName: string, maxKeys: number): RouteError {

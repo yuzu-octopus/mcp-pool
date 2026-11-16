@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { Pool } from "./pool.js";
 import { buildServer } from "./server.js";
 import type { PoolConfig } from "./types.js";
@@ -209,16 +210,20 @@ describe("resources passthrough", () => {
 			command: "bun",
 			args: ["run", "test/helper-server.ts"],
 			keys: [
-				{ KEY: "a", TEST_RESOURCES_JSON: JSON.stringify(RES_A) },
+				{
+					KEY: "a",
+					TEST_RESOURCES_JSON: JSON.stringify(RES_A),
+					TEST_CRASH_AFTER: "1",
+				},
 				{ KEY: "b", TEST_RESOURCES_JSON: JSON.stringify(RES_B) },
 			],
 			rateLimitPatterns: ["rate_limit_exceeded"],
 		});
 		await pool.start();
 		expect(pool.getResources().map((r) => r.uri)).toEqual(["exa://doc-1"]);
-		// Unknown URI read throws, forcing failover onto key1, whose divergent
-		// resources must be rejected by mismatch validation.
-		const result = await pool.routeRead("exa://unknown");
+		// Key0 crashes on its first call, forcing failover onto key1, whose
+		// divergent resources must be rejected by mismatch validation.
+		const result = await pool.routeCall("echo", { message: "x" });
 		assertErrorResult(result);
 		expect(result.isError).toBe(true);
 		expect(pool.getResources().map((r) => r.uri)).toEqual(["exa://doc-1"]);
@@ -232,7 +237,11 @@ describe("resources passthrough", () => {
 			command: "bun",
 			args: ["run", "test/helper-server.ts"],
 			keys: [
-				{ KEY: "a", TEST_RESOURCES_JSON: JSON.stringify(PLAIN) },
+				{
+					KEY: "a",
+					TEST_RESOURCES_JSON: JSON.stringify(PLAIN),
+					TEST_CRASH_AFTER: "1",
+				},
 				{ KEY: "b", TEST_RESOURCES_JSON: JSON.stringify(HTML) },
 			],
 			rateLimitPatterns: ["rate_limit_exceeded"],
@@ -241,7 +250,7 @@ describe("resources passthrough", () => {
 		expect(pool.getResourceTemplates().map((t) => t.mimeType)).toEqual([
 			"text/plain",
 		]);
-		const result = await pool.routeRead("exa://unknown");
+		const result = await pool.routeCall("echo", { message: "x" });
 		assertErrorResult(result);
 		expect(result.isError).toBe(true);
 		expect(pool.getResourceTemplates().map((t) => t.mimeType)).toEqual([
@@ -367,16 +376,20 @@ describe("prompts passthrough", () => {
 			command: "bun",
 			args: ["run", "test/helper-server.ts"],
 			keys: [
-				{ KEY: "a", TEST_PROMPTS_JSON: JSON.stringify(SUMMARIZE) },
+				{
+					KEY: "a",
+					TEST_PROMPTS_JSON: JSON.stringify(SUMMARIZE),
+					TEST_CRASH_AFTER: "1",
+				},
 				{ KEY: "b", TEST_PROMPTS_JSON: JSON.stringify(TRANSLATE) },
 			],
 			rateLimitPatterns: ["rate_limit_exceeded"],
 		});
 		await pool.start();
 		expect(pool.getPrompts().map((p) => p.name)).toEqual(["summarize"]);
-		// Unknown prompt makes the helper throw, forcing failover onto key1,
-		// whose divergent prompts must be rejected by mismatch validation.
-		const result = await pool.routePrompt("nonexistent");
+		// Key0 crashes on its first call, forcing failover onto key1, whose
+		// divergent prompts must be rejected by mismatch validation.
+		const result = await pool.routeCall("echo", { message: "x" });
 		assertErrorResult(result);
 		expect(result.isError).toBe(true);
 		expect(pool.getPrompts().map((p) => p.name)).toEqual(["summarize"]);
@@ -554,13 +567,11 @@ describe("session teardown + routing robustness (review findings)", () => {
 			const exact = await client.readResource({ uri: "exa://doc-1" });
 			expect(JSON.stringify(exact)).toContain("hello from doc");
 			// Template-concrete URIs miss the map and fall back to the owning
-			// pool via template match; upstream then fails the read, which
-			// proves routing got past the "Unknown resource" gate.
-			const err = await client
-				.readResource({ uri: "exa://docs/123" })
-				.then((): null => null)
-				.catch((e: unknown) => e);
-			expect(String(err)).toMatch(/failed to connect or are unavailable/);
+			// pool via template match; the upstream itself then rejects the
+			// read, and its error is relayed verbatim.
+			await expect(
+				client.readResource({ uri: "exa://docs/123" }),
+			).rejects.toThrow("MCP error -32602: Resource exa://docs/123 not found");
 		} finally {
 			await closeAll([alpha], client, server);
 		}
@@ -734,6 +745,27 @@ describe("failover ownership (007-A)", () => {
 		expect(JSON.stringify(await pool.routeCall("search", {}))).toContain(
 			"quota",
 		);
+	});
+
+	test("an upstream JSON-RPC error is relayed without burning the key", async () => {
+		const { pool, spawned, closed } = failoverHarness(async () => {
+			throw new McpError(ErrorCode.InvalidParams, "Unknown tool: nope");
+		});
+		await pool.start();
+		await expect(pool.routeCall("nope", {})).rejects.toThrow(
+			"MCP error -32602: Unknown tool: nope",
+		);
+		expect(spawned).toEqual([0]);
+		expect(closed).toEqual([]);
+	});
+
+	test("a closed upstream connection still fails over", async () => {
+		const { pool, spawned } = failoverHarness(async () => {
+			throw new McpError(ErrorCode.ConnectionClosed, "Connection closed");
+		});
+		await pool.start();
+		expect(await pool.routeCall("search", {})).toEqual(success);
+		expect(spawned).toEqual([0, 1]);
 	});
 
 	test("swap sections never overlap under concurrent failovers", async () => {
