@@ -2,6 +2,7 @@ node_modules/
 dist/
 /mcp-pool-bin
 /dist-bin/
+platform/*/bin/
 *.log
 .env*
 !.env.example
