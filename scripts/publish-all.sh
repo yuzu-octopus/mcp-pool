@@ -28,7 +28,15 @@ stage platform/darwin-arm64 mcp-pool-darwin-arm64 mcp-pool
 stage platform/win32-x64 mcp-pool-win32-x64.exe mcp-pool.exe
 stage platform/win32-arm64 mcp-pool-win32-arm64.exe mcp-pool.exe
 
-for d in platform/*/; do
-	(cd "$d" && npm publish)
-done
-npm publish
+publish_one() {
+	pkg="$1/package.json"
+	name="$(bun -e 'console.log((await Bun.file(Bun.argv[1]).json()).name)' "$pkg")"
+	ver="$(bun -e 'console.log((await Bun.file(Bun.argv[1]).json()).version)' "$pkg")"
+	if npm view "$name@$ver" version >/dev/null 2>&1; then
+		echo "skip $name@$ver (already published)"
+	else
+		(cd "$1" && npm publish)
+	fi
+}
+for d in platform/*/; do publish_one "${d%/}"; done
+publish_one .

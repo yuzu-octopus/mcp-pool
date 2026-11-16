@@ -110,6 +110,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish platform packages, then main
+        # Idempotent: already-published versions are skipped, so a re-run
+        # (or a retry after a partial publish) finishes the missing pieces
+        # instead of dying on E403 "already published".
         run: |
-          for d in platform/*/; do (cd "$d" && npm publish --provenance); done
-          npm publish --provenance
+          publish_one() {
+            pkg="$1/package.json"
+            name="$(bun -e 'console.log((await Bun.file(Bun.argv[1]).json()).name)' "$pkg")"
+            ver="$(bun -e 'console.log((await Bun.file(Bun.argv[1]).json()).version)' "$pkg")"
+            if npm view "$name@$ver" version >/dev/null 2>&1; then
+              echo "skip $name@$ver (already published)"
+            else
+              (cd "$1" && npm publish --provenance)
+            fi
+          }
+          for d in platform/*/; do publish_one "${d%/}"; done
+          publish_one .
