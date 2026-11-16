@@ -1,4 +1,10 @@
 {
+	"name": "@yuzu-octopus/mcp-pool-win32-x64",
+	"version": "0.5.4",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yuzu-octopus/mcp-pool"
+	},
 	"cpu": [
 		"x64"
 	],
@@ -6,11 +12,9 @@
 		"bin/"
 	],
 	"license": "MIT",
-	"name": "@yuzu-octopus/mcp-pool-win32-x64",
 	"os": [
 		"win32"
 	],
-	"version": "0.5.4",
 	"publishConfig": {
 		"access": "public"
 	}

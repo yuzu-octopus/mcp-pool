@@ -2,6 +2,10 @@
 	"name": "mcp-pool",
 	"version": "0.5.4",
 	"description": "MCP Key Pool Proxy — pool multiple API keys across upstream MCP servers",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yuzu-octopus/mcp-pool"
+	},
 	"type": "module",
 	"bin": {
 		"mcp-pool": "./bin/mcp-pool.js"
@@ -44,10 +48,6 @@
 		"check:package": "! bun pm pack --dry-run 2>&1 | grep -E '(dist|src)/.*\\.test\\.(ts|js|d\\.ts|js\\.map|d\\.ts\\.map)'",
 		"lint": "biome check",
 		"format": "biome check --write"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/yuzu-octopus/mcp-pool.git"
 	},
 	"bugs": {
 		"url": "https://github.com/yuzu-octopus/mcp-pool/issues"
